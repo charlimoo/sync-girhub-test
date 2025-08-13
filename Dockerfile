@@ -34,15 +34,18 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# Install the Microsoft ODBC Driver for SQL Server. This is critical.
-# This part is for Debian-based systems (like the python:3.11-slim image).
-# If you use a different base image, you'll need to adjust this.
+# --- CORRECTED SECTION ---
+# Install the Microsoft ODBC Driver for SQL Server using the modern, secure method.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl gnupg unixodbc && \
-    curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
-    curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get install -y --no-install-recommends curl gnupg unixodbc lsb-release ca-certificates && \
+    # Download the Microsoft GPG key and store it in the keyrings directory
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
+    # Add the Microsoft repository, referencing the GPG key and dynamically setting the Debian version
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/$(lsb_release -rs | cut -d'.' -f1)/prod $(lsb_release -cs) main" > /etc/apt/sources.list.d/mssql-release.list && \
+    # Update package list and install the driver
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
+    # Clean up APT cache
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built wheels from the builder stage
