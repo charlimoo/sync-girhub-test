@@ -1,0 +1,24 @@
+# requirements.txt (Corrected for Compatibility)
+Flask==2.3.3
+werkzeug==2.3.8
+gunicorn==21.2.0
+APScheduler==3.10.4
+Flask-APScheduler==1.12.4
+Flask-SQLAlchemy==3.0.5
+SQLAlchemy==2.0.23
+python-dotenv==1.0.0
+requests==2.31.0
+pytz==2023.3.post1  # <-- ADD THIS
+humanize==4.7.0     # <-- ADD THIS
+jdatetime==4.1.0
+
+# --- DB Drivers (install the one you need) ---
+# For MSSQL
+pyodbc==5.0.1
+
+# For MySQL (choose one)
+# mysql-connector-python==8.2.0
+# PyMySQL==1.1.0
+
+pyodbc
+faker

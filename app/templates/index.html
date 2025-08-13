@@ -1,0 +1,158 @@
+<!-- app/templates/index.html -->
+{% extends "base.html" %}
+{% from '_macros.html' import render_pagination %}
+
+{% block content %}
+<!-- Jobs Section -->
+<div class="mb-5">
+    <h2>Scheduled Jobs</h2>
+    <div class="table-responsive bg-white rounded" style="border: 1px solid var(--border-color);">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Job Name</th>
+                    <th>Next Run</th>
+                    <th>Schedule</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                   {% include '_job_row.html' %}
+                {% else %}
+                <tr>
+                    <td colspan="5" class="text-center py-5">No jobs scheduled.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Logs Section -->
+<div>
+    <h2>Recent Sync Logs</h2>
+    <div class="table-responsive bg-white rounded" style="border: 1px solid var(--border-color);">
+        <table class="table mb-0">
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Job ID</th>
+                    <th>Status</th>
+                    <th>Duration (s)</th>
+                    <th>Message</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs.items %}
+                <tr>
+                    <td>{{ log.timestamp | fmttime }}</td>
+                    <td>{{ log.job_id }}</td>
+                    <td>
+                        <div class="status-indicator 
+                            {% if log.status == 'SUCCESS' %}status-success
+                            {% elif log.status == 'FAILURE' %}status-failure
+                            {% else %}status-secondary{% endif %}">
+                            {{ log.status }}
+                        </div>
+                    </td>
+                    <td>{{ "%.2f"|format(log.duration_s) if log.duration_s is not none else 'N/A' }}</td>
+                    <td class="log-message" title="{{ log.message }}">{{ log.message }}</td>
+                    <td>
+                        {% if log.details %}
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                data-bs-toggle="modal" 
+                                data-bs-target="#logDetailsModal"
+                                data-log-details="{{ log.details }}">
+                            <i class="bi bi-search"></i>
+                        </button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="text-center py-5">No logs found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if logs.pages > 1 %}
+        <div class="mt-4">
+             {{ render_pagination(logs, 'main.index', pagination_args) }}
+        </div>
+    {% endif %}
+</div>
+
+<!-- MODALS SECTION -->
+
+<!-- Log Details Modal -->
+<div class="modal fade" id="logDetailsModal" tabindex="-1" aria-labelledby="logDetailsModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="logDetailsModalLabel">Log Details</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <pre><code id="logDetailsContent" class="language-json" style="background-color: #f8f9fa; border: 1px solid #dee2e6; display: block; padding: 1rem;"></code></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Schedule Edit Modal -->
+<div class="modal fade" id="scheduleModal" tabindex="-1" aria-labelledby="scheduleModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="scheduleForm" method="post">
+        <div class="modal-header">
+          <h5 class="modal-title" id="scheduleModalLabel">Update Schedule</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+            <div class="mb-3">
+              <label for="frequency" class="form-label">Frequency</label>
+              <select class="form-select" id="frequency" name="frequency">
+                <option value="daily">Daily</option>
+                <option value="hourly">Hourly</option>
+                <option value="weekly">Weekly</option>
+                <option value="custom">Custom (Cron)</option>
+              </select>
+            </div>
+            
+            <div id="daily-options" class="schedule-options mb-3">
+              <label for="daily-time" class="form-label">Time of Day (in {{ config.APP_TIMEZONE }})</label>
+              <input type="time" class="form-control" id="daily-time" name="time" value="02:00">
+            </div>
+
+            <div id="weekly-options" class="schedule-options mb-3" style="display:none;">
+              <label for="weekly-day" class="form-label">Day of Week</label>
+              <select class="form-select" id="weekly-day" name="day_of_week">
+                  <option value="mon">Monday</option>
+                  <option value="tue">Tuesday</option>
+                  <option value="wed">Wednesday</option>
+                  <option value="thu">Thursday</option>
+                  <option value="fri">Friday</option>
+                  <option value="sat">Saturday</option>
+                  <option value="sun">Sunday</option>
+              </select>
+            </div>
+            
+            <div id="custom-options" class="schedule-options" style="display:none;">
+              <label for="cron-string" class="form-label">Cron String</label>
+              <input type="text" class="form-control" id="cron-string" name="cron_string" placeholder="min hour day month day_of_week">
+              <div class="form-text">e.g., "0 3 * * *" for 3 AM daily. Note: All times are in {{ config.APP_TIMEZONE }}.</div>
+            </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Update Schedule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

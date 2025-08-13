@@ -1,0 +1,126 @@
+/* app/static/css/style.css */
+
+/* 1. Base & Typography */
+:root {
+    --color-success: #198754;
+    --color-failure: #dc3545;
+    --color-paused: #ffc107;
+    --color-active: var(--color-success);
+    --color-secondary-text: #6c757d;
+    --border-color: #dee2e6;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f8f9fa;
+    color: #212529;
+}
+
+/* 2. Layout & Navbar */
+.navbar {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.navbar-brand {
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+}
+
+h2 {
+    font-size: 1.5rem;
+    font-weight: 400;
+    padding-bottom: 0.75rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    color: #495057;
+}
+
+/* 3. Tables */
+.table {
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.95rem;
+}
+
+.table th {
+    font-weight: 500;
+    color: var(--color-secondary-text);
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.5px;
+    border-bottom-width: 2px;
+}
+
+.table td, .table th {
+    padding: 1rem 0.75rem;
+    vertical-align: middle;
+}
+
+.table tbody tr {
+    border-bottom: 1px solid var(--border-color);
+}
+.table tbody tr:last-child {
+    border-bottom: 0;
+}
+
+.table-hover tbody tr:hover {
+    background-color: #f1f3f5;
+}
+
+/* 4. Custom Status Indicators */
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.status-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-success::before { background-color: var(--color-success); }
+.status-failure::before { background-color: var(--color-failure); }
+.status-paused::before { background-color: var(--color-paused); }
+.status-active::before { background-color: var(--color-active); }
+.status-secondary::before { background-color: var(--color-secondary-text); }
+
+
+/* 5. Buttons & Actions */
+.table .btn {
+    padding: 0.25rem 0.6rem;
+}
+
+.table .btn-group .btn:not(:last-child) {
+    margin-right: 4px;
+}
+
+.btn-change-schedule {
+    color: var(--color-secondary-text);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid transparent;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    transition: all 0.2s ease-in-out;
+}
+
+.btn-change-schedule:hover {
+    color: #212529;
+    background-color: #e9ecef;
+    border-color: #dee2e6;
+}
+
+/* 6. Utility */
+.log-message {
+    max-width: 350px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

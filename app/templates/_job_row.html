@@ -1,0 +1,68 @@
+<!-- app/templates/_job_row.html -->
+<tr>
+    <!-- Job Name -->
+    <td>
+        <div>{{ job.name }}</div>
+        <small class="text-muted">{{ job.id }}</small>
+    </td>
+    
+    <!-- Next Run -->
+    <td>
+        {% if not job.is_enabled %}
+            <span class="text-muted">Disabled</span>
+        {% elif job.next_run %}
+            <span title="{{ job.next_run | fmttime }}">{{ job.next_run | reltime }}</span>
+        {% else %}
+            <span class="text-muted">Scheduling...</span>
+        {% endif %}
+    </td>
+
+    <!-- Schedule -->
+    <td>
+        <div class="d-flex align-items-center">
+            <span class="me-3" style="font-family: monospace; color: #6c757d;">
+                {{ job.trigger_str }}
+            </span>
+            <button class="btn-change-schedule"
+                    data-bs-toggle="modal"
+                    data-bs-target="#scheduleModal"
+                    data-job-id="{{ job.id }}">
+                <i class="bi bi-pencil-square"></i>
+            </button>
+        </div>
+    </td>
+
+    <!-- Status -->
+    <td>
+        {% if job.is_enabled %}
+            <div class="status-indicator status-active">Enabled</div>
+        {% else %}
+            <div class="status-indicator status-paused">Disabled</div>
+        {% endif %}
+    </td>
+
+    <!-- Actions -->
+    <td>
+        <div class="btn-group" role="group">
+            <!-- Run Now Button -->
+            <form action="{{ url_for('main.trigger_job', job_id=job.id) }}" method="post" class="d-inline">
+                <button type="submit" class="btn btn-outline-primary" title="Run Now" {% if not job.is_enabled %}disabled{% endif %}>
+                    <i class="bi bi-play-fill"></i>
+                </button>
+            </form>
+            
+            <!-- Enable/Disable Button -->
+            <form action="{{ url_for('main.toggle_enable_job', job_id=job.id) }}" method="post" class="d-inline">
+                {% if job.is_enabled %}
+                <button type="submit" class="btn btn-outline-secondary" title="Disable">
+                    <i class="bi bi-pause-fill"></i>
+                </button>
+                {% else %}
+                <button type="submit" class="btn btn-outline-success" title="Enable">
+                    <i class="bi bi-check-circle-fill"></i>
+                </button>
+                {% endif %}
+            </form>
+        </div>
+    </td>
+</tr>

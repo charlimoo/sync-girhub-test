@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container my-4">
+    <h2>Admin Area</h2>
+
+    <!-- Seeder Danger Zone -->
+    <div class="card border-danger mb-4">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">Seed Database with Fake Data</h5>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-danger" role="alert">
+                <h4 class="alert-heading">DANGER ZONE</h4>
+                <p>
+                    This action is <strong>EXTREMELY DESTRUCTIVE</strong> and irreversible. It will permanently <strong>DELETE ALL BUSINESS DATA</strong> from the following tables and replace it with new, randomly generated fake data:
+                </p>
+                <ul>
+                    <li><code>dbo.membership</code></li>
+                    <li><code>dbo.service</code></li>
+                    <li><code>dbo.invoiceHed</code> & <code>dbo.invoiceItem</code></li>
+                    <li><code>dbo.ServiceInvoice</code></li>
+                    <li><code>dbo.receipt</code></li>
+                </ul>
+                <hr>
+                <p class="mb-0">
+                    This is only for setting up a clean test environment. <strong>NEVER run this on a production database.</strong>
+                </p>
+            </div>
+
+            <form action="{{ url_for('main.run_seeder_action') }}" method="post" id="seed-form">
+                <div class="mb-3">
+                    <label for="seed-confirmation-text" class="form-label fw-bold">
+                        To confirm, please type <code>SEED FAKE DATA</code> into the box below.
+                    </label>
+                    <input type="text" class="form-control" id="seed-confirmation-text" name="confirmation" autocomplete="off">
+                </div>
+                <button type="submit" class="btn btn-danger" id="seed-button" disabled>
+                    <i class="bi bi-funnel-fill"></i> Seed Database with Test Data
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- START: NEW RELOAD SCHEDULER CARD -->
+    <div class="card border-info mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">Application Controls</h5>
+        </div>
+        <div class="card-body">
+            <h5 class="card-title">Reload Scheduler</h5>
+            <p class="card-text">
+                This is a "soft" reload. Use this if you have manually edited a job's schedule in the <code>job_config</code> table and want the change to take effect without a full application restart. It only reloads the scheduler's job definitions from the database.
+            </p>
+            <form action="{{ url_for('main.reschedule_jobs') }}" method="post">
+                <button type="submit" class="btn btn-info">
+                    <i class="bi bi-arrow-repeat"></i> Reload and Reschedule All Jobs
+                </button>
+            </form>
+        </div>
+    </div>
+    <!-- END: NEW RELOAD SCHEDULER CARD -->
+
+    <!-- Reset Application Data Card -->
+    <div class="card border-warning">
+        <div class="card-header bg-warning text-dark">
+            <h5 class="mb-0">Reset Application Data (Hard Reset)</h5>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-warning" role="alert">
+                <h4 class="alert-heading">WARNING ZONE</h4>
+                <p>
+                    This is a **full application reset** and is <strong>irreversible</strong>. It will permanently delete all data from the application-specific tables:
+                </p>
+                <ul>
+                    <li>All <strong>Sync Logs</strong> (<code>dbo.sync_log</code>) will be erased.</li>
+                    <li>All <strong>Job Configurations</strong> (<code>dbo.job_config</code>) will be reset to their defaults.</li>
+                    <li>All saved <strong>Data Mappings</strong> (<code>dbo.mapping</code>) will be deleted and re-seeded with defaults.</li>
+                </ul>
+                <hr>
+                <p class="mb-0">
+                    After resetting the data, the scheduler will also be reloaded. This is the primary button to use when you want a completely fresh start without affecting source business data.
+                </p>
+            </div>
+
+            <form action="{{ url_for('main.reset_application_tables') }}" method="post" id="reset-form">
+                <div class="mb-3">
+                    <label for="reset-confirmation-text" class="form-label fw-bold">
+                        To confirm, please type <code>DELETE ALL DATA</code> into the box below.
+                    </label>
+                    <input type="text" class="form-control" id="reset-confirmation-text" name="confirmation" autocomplete="off">
+                </div>
+                <button type="submit" class="btn btn-warning" id="reset-button" disabled>
+                    <i class="bi bi-trash-fill"></i> Reset Application (Hard Reset)
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Logic for Seeder Form
+    const seedConfirmationInput = document.getElementById('seed-confirmation-text');
+    const seedButton = document.getElementById('seed-button');
+    const seedRequiredText = 'SEED FAKE DATA';
+
+    seedConfirmationInput.addEventListener('input', function() {
+        seedButton.disabled = (this.value !== seedRequiredText);
+    });
+
+    document.getElementById('seed-form').addEventListener('submit', function(e) {
+        if (seedButton.disabled) {
+            e.preventDefault();
+            alert('You must type the confirmation text correctly to proceed.');
+        } else if (!confirm('DANGER! This will WIPE ALL BUSINESS DATA and replace it with fake data. Are you absolutely sure?')) {
+            e.preventDefault();
+        }
+    });
+
+    // Logic for Reset Form
+    const resetConfirmationInput = document.getElementById('reset-confirmation-text');
+    const resetButton = document.getElementById('reset-button');
+    const resetRequiredText = 'DELETE ALL DATA';
+
+    resetConfirmationInput.addEventListener('input', function() {
+        resetButton.disabled = (this.value !== resetRequiredText);
+    });
+
+    document.getElementById('reset-form').addEventListener('submit', function(e) {
+        if (resetButton.disabled) {
+            e.preventDefault();
+            alert('You must type the confirmation text correctly to proceed.');
+        } else if (!confirm('Are you sure? This will delete all logs, job settings, and mappings, then reload the application state.')) {
+            e.preventDefault();
+        }
+    });
+});
+</script>
+{% endblock %}

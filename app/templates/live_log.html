@@ -1,0 +1,78 @@
+<!-- app/templates/live_log.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container my-4">
+    <!-- ADDED: Status Banner -->
+    <div id="status-banner" class="alert d-none" role="alert"></div>
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h2 class="mb-0">Live Log: {{ job.name }}</h2>
+            <p class="text-muted">Job ID: {{ job.id }}</p>
+        </div>
+        <a href="{{ url_for('main.index') }}" class="btn btn-secondary">
+             ← Back to Dashboard
+        </a>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <pre id="log-output" class="bg-dark text-white p-3 rounded" style="min-height: 400px; max-height: 60vh; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;"></pre>
+            <div id="status-indicator" class="mt-2">
+                <div class="spinner-border spinner-border-sm text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <span class="ms-2">Running job...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const logOutput = document.getElementById('log-output');
+    const statusIndicator = document.getElementById('status-indicator');
+    const statusBanner = document.getElementById('status-banner');
+    const eventSource = new EventSource("{{ url_for('main.stream_log', job_id=job.id) }}");
+
+    eventSource.onmessage = function(event) {
+        logOutput.textContent += event.data + '\n';
+        logOutput.scrollTop = logOutput.scrollHeight;
+    };
+
+    // Listen for our custom 'status' event
+    eventSource.addEventListener('status', function(event) {
+        const finalStatus = event.data;
+        let bannerClass = 'alert-secondary';
+        let bannerText = `Job finished with status: ${finalStatus}`;
+
+        if (finalStatus === 'SUCCESS') {
+            bannerClass = 'alert-success';
+        } else if (finalStatus === 'FAILURE') {
+            bannerClass = 'alert-danger';
+        }
+        
+        statusBanner.textContent = bannerText;
+        statusBanner.className = `alert ${bannerClass}`; // Reset classes and add new ones
+        statusBanner.classList.remove('d-none'); // Make it visible
+
+        // Update the small indicator at the bottom
+        const icon = (finalStatus === 'SUCCESS') ? '✔' : '❌';
+        statusIndicator.innerHTML = `<span class="text-${(finalStatus === 'SUCCESS') ? 'success' : 'danger'}">${icon} Job complete.</span>`;
+        
+        // Close the connection as the job is done
+        eventSource.close();
+    });
+
+    eventSource.onerror = function(err) {
+        console.error("EventSource failed:", err);
+        statusBanner.textContent = 'Connection to log stream was lost.';
+        statusBanner.className = 'alert alert-warning';
+        statusBanner.classList.remove('d-none');
+        statusIndicator.innerHTML = '<span class="text-danger">❌ Connection to log stream lost.</span>';
+        eventSource.close();
+    };
+});
+</script>
+{% endblock %}

@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Inspect Database State</h2>
+    </div>
+
+    <!-- Main Tab Navigation (for tables) -->
+    <ul class="nav nav-tabs" id="inspectTab" role="tablist">
+        {% for table_name, config in tables.items() %}
+        <li class="nav-item" role="presentation">
+            <button class="nav-link {% if loop.first %}active{% endif %}" 
+                    id="{{ table_name }}-tab-main" 
+                    data-bs-toggle="tab" 
+                    data-bs-target="#{{ table_name }}-pane" 
+                    type="button" role="tab" data-table-name="{{ table_name }}">
+                {{ config.display_name }}
+            </button>
+        </li>
+        {% endfor %}
+    </ul>
+
+    <!-- Main Tab Content -->
+    <div class="tab-content" id="inspectTabContent">
+        {% for table_name, config in tables.items() %}
+        <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ table_name }}-pane" role="tabpanel">
+            <div class="card card-body border-top-0 rounded-bottom">
+                
+                <!-- Stats Section -->
+                <div id="stats-{{ table_name }}" class="row g-3 mb-4 text-center"></div>
+                
+                <!-- Sub-tabs for Errored vs. Skipped -->
+                <ul class="nav nav-pills mb-3" id="pills-tab-{{table_name}}" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#pills-failed-{{table_name}}" type="button">Errored Records</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-skipped-{{table_name}}" type="button">Skipped Records</button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="pills-failed-{{table_name}}" role="tabpanel">
+                        <div id="failed-records-{{ table_name }}"></div>
+                    </div>
+                    <div class="tab-pane fade" id="pills-skipped-{{table_name}}" role="tabpanel">
+                         <div id="skipped-records-{{ table_name }}"></div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const inspectTab = document.getElementById('inspectTab');
+
+    async function loadTabData(tableName) {
+        const statsContainer = document.getElementById(`stats-${tableName}`);
+        const failedContainer = document.getElementById(`failed-records-${tableName}`);
+        const skippedContainer = document.getElementById(`skipped-records-${tableName}`);
+        
+        statsContainer.innerHTML = `<div class="spinner-border text-primary mx-auto" role="status"><span class="visually-hidden">Loading...</span></div>`;
+        failedContainer.innerHTML = '';
+        skippedContainer.innerHTML = '';
+
+        try {
+            const response = await fetch(`/inspect/data/${tableName}`);
+            if (!response.ok) throw new Error('Network response was not ok.');
+            
+            const data = await response.json();
+            renderStats(statsContainer, data.stats);
+            renderRecordsTable(failedContainer, data.failed_records, tableName, data.pk_column, 'failed');
+            renderRecordsTable(skippedContainer, data.skipped_records, tableName, data.pk_column, 'skipped');
+
+        } catch (error) {
+            console.error('Failed to fetch inspection data:', error);
+            statsContainer.innerHTML = `<div class="alert alert-danger">Failed to load statistics.</div>`;
+        }
+    }
+
+    function renderStats(container, stats) {
+        container.innerHTML = `
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.total}</h5><small class="text-muted">Total</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.synced}</h5><small class="text-muted">Synced</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.pending}</h5><small class="text-muted">Pending</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.failed}</h5><small class="text-muted text-danger">Errored</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.skipped}</h5><small class="text-muted text-warning">Skipped</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.superseded}</h5><small class="text-muted">Superseded</small></div></div>
+        `;
+    }
+
+    function renderRecordsTable(container, records, tableName, pkColumn, type) {
+        if (!records || records.length === 0) {
+            container.innerHTML = `<div class="alert alert-secondary">No ${type} records found.</div>`;
+            return;
+        }
+
+        const isFailed = type === 'failed';
+        const btnClass = isFailed ? 'btn-outline-primary' : 'btn-outline-secondary';
+        const btnIcon = isFailed ? 'bi-arrow-clockwise' : 'bi-eye-slash';
+        const btnText = isFailed ? 'Retry' : 'Ignore';
+        const btnAction = isFailed ? 'btn-retry' : 'btn-ignore';
+        const messageClass = isFailed ? 'text-danger' : 'text-warning';
+
+        let tableHtml = `
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered">
+                    <thead><tr>
+                        <th>${pkColumn}</th>
+                        <th>Reason / Message</th>
+                        <th style="width: 10%;">Action</th>
+                    </tr></thead>
+                    <tbody>`;
+        
+        records.forEach(record => {
+            const pkValue = record[pkColumn];
+            tableHtml += `
+                <tr id="row-${tableName}-${pkValue}">
+                    <td style="font-family: monospace; font-size: 0.8rem;">${pkValue}</td>
+                    <td class="${messageClass}">${record.fetchMessage || 'No message provided.'}</td>
+                    <td>
+                        <button class="btn btn-sm ${btnClass} ${btnAction}" 
+                                data-table-name="${tableName}" 
+                                data-pk-value="${pkValue}">
+                            <i class="bi ${btnIcon}"></i> ${btnText}
+                        </button>
+                    </td>
+                </tr>`;
+        });
+
+        tableHtml += `</tbody></table></div>`;
+        container.innerHTML = tableHtml;
+    }
+
+    inspectTab.addEventListener('shown.bs.tab', event => {
+        loadTabData(event.target.dataset.tableName);
+    });
+
+    document.getElementById('inspectTabContent').addEventListener('click', async function(event) {
+        const button = event.target.closest('.btn-retry, .btn-ignore');
+        if (!button) return;
+
+        const tableName = button.dataset.tableName;
+        const pkValue = button.dataset.pkValue;
+        const isRetry = button.classList.contains('btn-retry');
+        const endpoint = isRetry ? 'retry' : 'ignore';
+        const confirmationText = isRetry 
+            ? `Are you sure you want to re-queue record '${pkValue}' for synchronization?`
+            : `Are you sure you want to permanently ignore record '${pkValue}'? This action cannot be easily undone.`;
+
+        if (!confirm(confirmationText)) return;
+
+        button.disabled = true;
+        button.innerHTML = `<span class="spinner-border spinner-border-sm"></span>`;
+        
+        try {
+            const response = await fetch(`/inspect/${endpoint}/${tableName}/${pkValue}`, { method: 'POST' });
+            if (!response.ok) throw new Error('Request failed.');
+            
+            const row = document.getElementById(`row-${tableName}-${pkValue}`);
+            if(row) {
+                row.style.opacity = '0';
+                setTimeout(() => row.remove(), 300);
+            }
+        } catch (error) {
+            console.error(`${endpoint} action failed:`, error);
+            alert(`Failed to ${endpoint} record. See console for details.`);
+            button.disabled = false;
+            button.innerHTML = isRetry 
+                ? `<i class="bi bi-arrow-clockwise"></i> Retry`
+                : `<i class="bi bi-eye-slash"></i> Ignore`;
+        }
+    });
+
+    const initialTab = document.querySelector('#inspectTab .nav-link.active');
+    if (initialTab) {
+        loadTabData(initialTab.dataset.tableName);
+    }
+});
+</script>
+{% endblock %}
