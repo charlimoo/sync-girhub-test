@@ -37,11 +37,11 @@ ENV PYTHONUNBUFFERED 1
 # --- CORRECTED SECTION ---
 # Install the Microsoft ODBC Driver for SQL Server using the modern, secure method.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl gnupg unixodbc lsb-release ca-certificates && \
+    apt-get install -y --no-install-recommends curl gnupg unixodbc ca-certificates && \
     # Download the Microsoft GPG key and store it in the keyrings directory
     curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
-    # Add the Microsoft repository, referencing the GPG key and dynamically setting the Debian version
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/$(lsb_release -rs | cut -d'.' -f1)/prod $(lsb_release -cs) main" > /etc/apt/sources.list.d/mssql-release.list && \
+    # Add the Microsoft repository, HARDCODING to Debian 12 (Bookworm) for compatibility
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
     # Update package list and install the driver
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
