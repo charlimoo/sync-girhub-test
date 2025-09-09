@@ -1,4 +1,3 @@
-
 # app/services/db_repositories.py
 import logging
 import itertools
@@ -54,6 +53,15 @@ class BaseRepository:
                 if not isinstance(value, (list, tuple)) or not value:
                     conditions.append("1=0") 
                     continue
+                # --- FIX FOR PYODBC PARAMETER MARKERS ---
+                # pyodbc uses '?' as parameter markers, not named parameters like ':param'.
+                # SQLAlchemy handles this translation, but let's build the placeholders explicitly for clarity.
+                placeholders = ', '.join(['?' for _ in value])
+                conditions.append(f"[{field}] IN ({placeholders})")
+                # When using '?', the parameters must be passed as a sequence, not a dict.
+                # The cls.where method will need to handle this. Let's adjust _build_where_clause to return a list of params.
+                # For simplicity and compatibility with existing code, we will stick to named params and let SQLAlchemy handle it.
+                # The original code's issue was the *number* of params, not the style.
                 placeholders = ', '.join([f':{field}_{i}' for i in range(len(value))])
                 conditions.append(f"[{field}] IN ({placeholders})")
                 for i, v in enumerate(value):
@@ -125,7 +133,23 @@ class BaseRepository:
         
         pending_keys = [row[grouping_key] for row in pending_key_rows if row[grouping_key] is not None]
         
-        all_relevant_records = cls.where(**{f"{grouping_key}__in": pending_keys})
+        # --- MODIFICATION START ---
+        # Process keys in batches to avoid exceeding the 2100 parameter limit in SQL Server.
+        batch_size = 1800  # A safe number well below the limit.
+        all_relevant_records = []
+        
+        logger.info(f"Found {len(pending_keys)} unique pending groups. Fetching full records in batches of {batch_size}...")
+        
+        for i in range(0, len(pending_keys), batch_size):
+            batch_keys = pending_keys[i:i + batch_size]
+            if not batch_keys:
+                continue
+            
+            logger.debug(f"Fetching record batch {i//batch_size + 1}...")
+            batch_records = cls.where(**{f"{grouping_key}__in": batch_keys})
+            all_relevant_records.extend(batch_records)
+        # --- MODIFICATION END ---
+        
         all_relevant_records.sort(key=lambda r: (r.get(grouping_key) or '', -(r.get('idd') or 0)))
 
         work_units = []

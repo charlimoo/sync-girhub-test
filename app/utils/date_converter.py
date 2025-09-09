@@ -41,29 +41,37 @@ def convert_date_for_asanito(date_input) -> str | None:
 
 def convert_date_for_invoice_api(date_input) -> str | None:
     """
-    Converts a date input to the specific 'MM_dd_yyyy HH:mm' format
-    required by the Asanito Invoice API.
+    Converts a date input to a Jalali date in the specific 'MM_dd_yyyy HH:mm' 
+    format required by the Asanito Invoice and OperatingIncome APIs.
     """
     if not date_input:
         return None
     
-    # Handle both datetime and date objects from the database
-    if isinstance(date_input, (date, datetime)):
-        # Format the date as required, and add a default time component.
-        return date_input.strftime('%m_%d_%Y 00:00')
-
-    # If it's a string, we first try to parse it into a datetime object
-    if isinstance(date_input, str):
+    gregorian_dt = None
+    
+    # Step 1: Ensure we have a standard Gregorian datetime object to work with.
+    if isinstance(date_input, datetime):
+        gregorian_dt = date_input
+    elif isinstance(date_input, date):
+        # Convert date to datetime, assuming start of the day
+        gregorian_dt = datetime.combine(date_input, datetime.min.time())
+    elif isinstance(date_input, str):
         try:
-            # Attempt to parse common ISO-like formats
-            dt_object = datetime.fromisoformat(date_input.replace(' ', 'T'))
-            return dt_object.strftime('%m_%d_%Y 00:00')
-        except ValueError:
+            # Attempt to parse common ISO-like formats from the database
+            gregorian_dt = datetime.fromisoformat(date_input.replace(' ', 'T'))
+        except (ValueError, TypeError):
             logger.warning(f"Could not parse date string '{date_input}' for invoice conversion. Skipping.")
             return None
     
-    logger.warning(f"Invalid type for invoice date conversion: {type(date_input)}. Expected str, date, or datetime.")
-    return None
+    if not gregorian_dt:
+        logger.warning(f"Invalid type for invoice date conversion: {type(date_input)}. Expected str, date, or datetime.")
+        return None
+
+    # Step 2: Convert the Gregorian datetime object to its Jalali equivalent.
+    jalali_dt = jdatetime.datetime.fromgregorian(datetime=gregorian_dt)
+    
+    # Step 3: Format the Jalali datetime into the required string format.
+    return jalali_dt.strftime('%m_%d_%Y %H:%M')
 
 def get_current_jalali_for_status_update() -> str:
     """

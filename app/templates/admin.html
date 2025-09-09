@@ -4,7 +4,6 @@
 <div class="container my-4">
     <h2>Admin Area</h2>
 
-    <!-- Seeder Danger Zone -->
     <div class="card border-danger mb-4">
         <div class="card-header bg-danger text-white">
             <h5 class="mb-0">Seed Database with Fake Data</h5>
@@ -42,26 +41,6 @@
         </div>
     </div>
 
-    <!-- START: NEW RELOAD SCHEDULER CARD -->
-    <div class="card border-info mb-4">
-        <div class="card-header bg-info text-white">
-            <h5 class="mb-0">Application Controls</h5>
-        </div>
-        <div class="card-body">
-            <h5 class="card-title">Reload Scheduler</h5>
-            <p class="card-text">
-                This is a "soft" reload. Use this if you have manually edited a job's schedule in the <code>job_config</code> table and want the change to take effect without a full application restart. It only reloads the scheduler's job definitions from the database.
-            </p>
-            <form action="{{ url_for('main.reschedule_jobs') }}" method="post">
-                <button type="submit" class="btn btn-info">
-                    <i class="bi bi-arrow-repeat"></i> Reload and Reschedule All Jobs
-                </button>
-            </form>
-        </div>
-    </div>
-    <!-- END: NEW RELOAD SCHEDULER CARD -->
-
-    <!-- Reset Application Data Card -->
     <div class="card border-warning">
         <div class="card-header bg-warning text-dark">
             <h5 class="mb-0">Reset Application Data (Hard Reset)</h5>
@@ -96,6 +75,24 @@
             </form>
         </div>
     </div>
+
+    <div class="card border-info mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">Application Controls</h5>
+        </div>
+        <div class="card-body">
+            <h5 class="card-title">Reload Scheduler</h5>
+            <p class="card-text">
+                This is a "soft" reload. Use this if you have manually edited a job's schedule in the <code>job_config</code> table and want the change to take effect without a full application restart. It only reloads the scheduler's job definitions from the database.
+            </p>
+            <form action="{{ url_for('main.reschedule_jobs') }}" method="post">
+                <button type="submit" class="btn btn-info">
+                    <i class="bi bi-arrow-repeat"></i> Reload and Reschedule All Jobs
+                </button>
+            </form>
+        </div>
+    </div>
+
 </div>
 
 <script>
