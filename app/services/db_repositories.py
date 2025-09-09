@@ -11,8 +11,7 @@ class BaseRepository:
     It provides common methods for finding, filtering, and updating records
     based on the "fetchStatus" and "idd" workflow.
     
-    Subclasses must define `__table_name__`, `__primary_key__`, `__asanito_id_field__`,
-    and implement `get_pending_filter`.
+    Subclasses must define `__table_name__`, `__primary_key__`, `__asanito_id_field__`.
     """
     __table_name__ = None
     __primary_key__ = None
@@ -24,16 +23,16 @@ class BaseRepository:
         """Returns the grouping key, defaulting to the primary key if not set."""
         return cls.__group_by_key__ if cls.__group_by_key__ else cls.__primary_key__
 
-    # --- MODIFICATION START: Switched to positional (?) parameters for pyodbc compatibility ---
     @classmethod
     def _build_where_clause(cls, **kwargs):
         """
-        Builds a SQL WHERE clause and a parameter list from kwargs, using '?' placeholders.
-        This is required for compatibility with the pyodbc driver.
+        Builds a SQL WHERE clause and a parameter dictionary from kwargs.
+        This version uses named parameters (:param), which SQLAlchemy reliably translates 
+        for the underlying pyodbc driver.
         """
-        if not kwargs: return "", []
+        if not kwargs: return "", {}
         conditions = []
-        params = [] # Use a list for positional parameters
+        params = {}
         for key, value in kwargs.items():
             field = key
             
@@ -53,25 +52,26 @@ class BaseRepository:
                 if not isinstance(value, (list, tuple)) or not value:
                     conditions.append("1=0") 
                     continue
-                placeholders = ', '.join(['?' for _ in value])
+                # Create unique named parameters for each item in the IN clause.
+                # This is the key to letting SQLAlchemy handle the translation correctly.
+                placeholders = ', '.join([f':{field}_{i}' for i in range(len(value))])
                 conditions.append(f"[{field}] IN ({placeholders})")
-                params.extend(value) # Extend the list with the values
+                for i, v in enumerate(value):
+                    params[f'{field}_{i}'] = v
             elif key.endswith('__ne'):
                 field = key[:-4]
-                conditions.append(f"[{field}] != ?")
-                params.append(value)
+                conditions.append(f"[{field}] != :{field}")
+                params[field] = value
             else:
-                conditions.append(f"[{field}] = ?")
-                params.append(value)
+                conditions.append(f"[{field}] = :{field}")
+                params[field] = value
         where_sql = "WHERE " + " AND ".join(conditions)
         return where_sql, params
-    # --- MODIFICATION END ---
 
     @classmethod
     def find(cls, pk_value):
         """Finds a single record by its primary key."""
         if not cls.__primary_key__: raise NotImplementedError(f"Primary key not defined for {cls.__name__}")
-        # Note: Using named parameters here is fine as it's a simple, single query.
         query = f"SELECT * FROM {cls.__table_name__} WHERE [{cls.__primary_key__}] = :pk"
         results = execute_query(query, params={'pk': pk_value})
         return results[0] if results else None
@@ -125,8 +125,9 @@ class BaseRepository:
         
         pending_keys = [row[grouping_key] for row in pending_key_rows if row[grouping_key] is not None]
         
-        # Process keys in batches to avoid exceeding the 2100 parameter limit in SQL Server.
-        batch_size = 1800  # A safe number well below the limit.
+        # --- BATCHING LOGIC TO PREVENT PARAMETER OVERLOAD ---
+        # This loop is the core of the fix for scalability.
+        batch_size = 1800  # A safe number well below the 2100 limit.
         all_relevant_records = []
         
         logger.info(f"Found {len(pending_keys)} unique pending groups. Fetching full records in batches of {batch_size}...")
@@ -139,6 +140,7 @@ class BaseRepository:
             logger.debug(f"Fetching record batch {i//batch_size + 1} of {len(pending_keys)//batch_size + 1}...")
             batch_records = cls.where(**{f"{grouping_key}__in": batch_keys})
             all_relevant_records.extend(batch_records)
+        # --- END OF BATCHING LOGIC ---
         
         all_relevant_records.sort(key=lambda r: (r.get(grouping_key) or '', -(r.get('idd') or 0)))
 
@@ -203,7 +205,6 @@ class BaseRepository:
         
         logger.info(f"Finalizing work unit for {cls.__table_name__}. Processed PK: '{processed_pk}', Status: '{status}'.")
         
-        # This part is fine with named parameters because the list of PKs per group is small.
         pk_placeholders = ', '.join([f':pk_{i}' for i in range(len(all_pks))])
         
         query = f"""
@@ -225,7 +226,6 @@ class BaseRepository:
         return execute_write(query, params)
 
 # --- Concrete Repository Implementations ---
-# (No changes needed in these classes below)
 class MembershipRepository(BaseRepository):
     __table_name__ = 'dbo.membership'
     __primary_key__ = 'memberVId'
