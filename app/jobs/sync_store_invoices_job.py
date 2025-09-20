@@ -1,16 +1,16 @@
+# start of app/jobs/sync_store_invoices_job.py
 # app/jobs/sync_store_invoices_job.py
 import logging
 import time
 import json
 import traceback
-from decimal import Decimal
 from flask import current_app
 
 from app.services.db_repositories import InvoiceHeaderRepository, InvoiceItemRepository, MembershipRepository, ServiceRepository
 from app.services.asanito_service import AsanitoService
 from app.services.asanito_http_client import AsanitoHttpClient
 from app.services.mapping_service import get_mapping, MappingNotFoundError
-from app.models import SyncLog
+from app.models import SyncLog, JobConfig
 from app import db
 from app.utils.date_converter import convert_date_for_invoice_api, get_current_jalali_for_status_update
 
@@ -46,17 +46,14 @@ def _build_invoice_payload(header_data, items_data, asanito_service, api_client,
         raise ValueError(f"Dependency not met: Contact for {lookup_key} '{person_id_from_invoice}' has not been synced (missing memberAid).")
     asanito_person_id = int(person_record['memberAid'])
 
-    # --- MAPPINGS & DEFAULTS ---
     logger.info(f"Person dependency met for invoice '{header_data.get('Title')}'. Building payload.")
     organization_id = int(get_mapping('Organization', header_data['OrganizationID'], fail_on_not_found=True))
     owner_user_id = int(get_mapping('CreatorUser', header_data['CreatorUserVID'], fail_on_not_found=True))
     default_warehouse_id = int(get_mapping('Defaults', 'HostWarehouseID', fail_on_not_found=True))
     bank_account_id = _get_default_bank_account_id(api_client, organization_id, cache['bank_accounts'])
 
-    # --- PAYLOAD CONSTRUCTION: ITEMS ---
     invoice_items = []
     for item_row in items_data:
-        # --- DEPENDENCY CHECK: PRODUCT ---
         product_vid = item_row['ProducVtID']
         product_record = ServiceRepository.find_by(serviceVid=product_vid)
         if not product_record or not product_record.get('serviceAid'):
@@ -73,7 +70,7 @@ def _build_invoice_payload(header_data, items_data, asanito_service, api_client,
             "productID": asanito_product_id, "title": item_row.get('Title'), "count": count,
             "unitPrice": unit_price, "productUnitID": product_unit_id,
             "hostWarehouseID": default_warehouse_id, "productType": item_row.get('ProductType'),
-            "index": int(item_row.get('index') or (len(invoice_items) + 1)) # Default index
+            "index": int(item_row.get('index') or (len(invoice_items) + 1))
         }
         if discount_amount > 0:
             item_payload["discountType"] = False; item_payload["discountAmount"] = str(discount_amount); item_payload["discountPercent"] = "0"
@@ -81,7 +78,6 @@ def _build_invoice_payload(header_data, items_data, asanito_service, api_client,
             item_payload["discountType"] = True; item_payload["discountAmount"] = 0; item_payload["discountPercent"] = "0"
         invoice_items.append(item_payload)
 
-    # --- PAYLOAD CONSTRUCTION: HEADER ---
     addition_deductions = []
     tax_percent = int(header_data.get('TaxPercent') or 0)
     if tax_percent > 0:
@@ -119,7 +115,6 @@ def run_job():
         asanito_service = AsanitoService()
         api_client = AsanitoHttpClient(asanito_service, job_id=job_id)
         
-        # --- FIX: Initialize log lists and counters here ---
         success_count, fail_count, skipped_count = 0, 0, 0
         synced_items, failed_items, skipped_items = [], [], []
         
@@ -132,9 +127,16 @@ def run_job():
             logger.info(f"Found {len(work_units)} invoice work units to process.")
             
             for unit in work_units:
+                job_config = JobConfig.query.filter_by(job_id=job_id).first()
+                if job_config and job_config.cancellation_requested:
+                    logger.warning("Termination requested by user. Halting job processing.")
+                    skipped_items.append({'item': 'ALL REMAINING', 'reason': 'Job terminated by user.'})
+                    break
+
                 action, header_data = unit['action'], unit['new_data_row']
                 source_pk = header_data['invoiceVID']
                 record_identifier = f"Invoice '{header_data.get('Title')}' (PK: {source_pk})"
+                asanito_id_for_failure = unit.get('asanito_id')
                 
                 try:
                     logger.info(f"Processing {record_identifier} with action: {action}")
@@ -168,25 +170,21 @@ def run_job():
                     if status_code < 300 and response_data and isinstance(response_data, dict):
                         asanito_id = response_data.get('id')
                         if asanito_id:
-                            # --- START: New status update logic ---
-                            try:
-                                logger.info(f"Store Invoice {asanito_id} sync success. Updating status to 'finalized' (3).")
-                                status_payload = {
-                                    "invoiceIDs": [asanito_id],
-                                    "status": 3,
-                                    "sellDate": get_current_jalali_for_status_update()
-                                }
-                                status_response = api_client.request(
-                                    method='PUT',
-                                    endpoint_template='/api/asanito/Invoice/groupUpdateStatus',
-                                    body_payload=status_payload
-                                )
-                                if status_response.get('error'):
-                                    status_update_error = status_response['error']
-                                    logger.warning(f"Status update for store invoice {asanito_id} failed: {status_update_error}. Main sync still considered successful.")
-                            except Exception as status_update_e:
-                                logger.error(f"An unexpected exception occurred during store invoice status update for ID {asanito_id}: {status_update_e}", exc_info=True)
-                            # --- END: New status update logic ---
+                            asanito_id_for_failure = asanito_id
+                            
+                            logger.info(f"Store Invoice {asanito_id} sync success. Updating status to 'finalized' (3).")
+                            status_payload = {
+                                "invoiceIDs": [asanito_id],
+                                "status": 3,
+                                "sellDate": get_current_jalali_for_status_update()
+                            }
+                            status_response = api_client.request(
+                                method='PUT',
+                                endpoint_template='/api/asanito/Invoice/groupUpdateStatus',
+                                body_payload=status_payload
+                            )
+                            if status_response.get('error'):
+                                raise ValueError(f"Invoice {asanito_id} created, but status update failed: {status_response['error']}")
 
                             InvoiceHeaderRepository.finalize_work_unit(unit, 'SYNCED', asanito_id=asanito_id)
                             success_count += 1
@@ -195,28 +193,27 @@ def run_job():
                             raise ValueError("Sync successful but received no Asanito Invoice ID.")
                     else:
                         error_message = response.get('error', 'Unknown error')
-                        if status_code >= 400 and status_code < 500:
-                            logger.error(f"Failed to process {record_identifier} with a {status_code} error: {error_message}")
-                            InvoiceHeaderRepository.finalize_work_unit(unit, 'FAILED', message=f"API Error ({status_code}): {error_message}")
-                            fail_count += 1
-                            failed_items.append({'item': record_identifier, 'error': error_message, 'action': action})
-                        else:
-                            raise ValueError(f"API Error ({status_code}): {error_message}")
+                        raise ValueError(f"API Error ({status_code}): {error_message}")
 
-                except (MappingNotFoundError, ValueError, ConnectionError) as item_error:
-                    error_message = str(item_error)
-                    logger.warning(f"Marking {record_identifier} as SKIPPED: {error_message}")
-                    # Use finalize_work_unit to update ONLY the latest record
-                    InvoiceHeaderRepository.finalize_work_unit(unit, 'SKIPPED', message=error_message)
+                except MappingNotFoundError as e:
+                    logger.warning(f"Marking {record_identifier} as SKIPPED: {e}")
+                    InvoiceHeaderRepository.finalize_work_unit(unit, 'SKIPPED', message=str(e))
                     skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': error_message, 'action': action})
-                except Exception as item_error:
-                    logger.error(f"CRITICAL failure processing {record_identifier}, will be retried: {item_error}", exc_info=True)
+                    skipped_items.append({'item': record_identifier, 'reason': str(e), 'action': action})
+                
+                except (ValueError, ConnectionError) as e:
+                    logger.error(f"Failed to process {record_identifier}: {e}")
+                    InvoiceHeaderRepository.finalize_work_unit(unit, 'FAILED', asanito_id=asanito_id_for_failure, message=str(e))
+                    fail_count += 1
+                    failed_items.append({'item': record_identifier, 'error': str(e), 'action': action})
+
+                except Exception as e:
+                    logger.error(f"CRITICAL unhandled exception on {record_identifier}: {e}", exc_info=True)
                     skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(item_error)}", 'action': action})
+                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(e)}", 'action': action})
             
             status = 'FAILURE' if fail_count > 0 else 'SUCCESS'
-            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped for Retry: {skipped_count}."
+            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped/Retrying: {skipped_count}."
             log_details = {'synced_items': synced_items, 'failed_items': failed_items, 'skipped_items': skipped_items}
         
         duration = time.time() - start_time

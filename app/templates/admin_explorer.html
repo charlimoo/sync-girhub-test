@@ -1,0 +1,218 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Data Explorer</h2>
+        <a href="{{ url_for('main.admin_page') }}" class="btn btn-secondary">
+             ← Back to Admin
+        </a>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <form id="explorer-form" class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label for="table-select" class="form-label">Select Table</label>
+                    <select id="table-select" class="form-select" name="table">
+                        <option value="" selected disabled>-- Choose a table --</option>
+                        {% for name, display_name in tables.items() %}
+                        <option value="{{ name }}">{{ display_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="column-select" class="form-label">Search In Column</label>
+                    <select id="column-select" class="form-select" name="column" disabled>
+                        <option selected>-- Select a table first --</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="search-value" class="form-label">Value (contains)</label>
+                    <input type="text" id="search-value" class="form-control" name="value" placeholder="Enter search term..." disabled>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" id="search-button" class="btn btn-primary w-100" disabled>
+                        <i class="bi bi-search"></i> Search
+                    </button>
+                </div>
+            </form>
+        </div>
+        <div class="card-body">
+            <div id="results-area">
+                <div class="text-center text-muted p-5">Please select a table and column to begin your search.</div>
+            </div>
+            <nav id="pagination-area" class="mt-4"></nav>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const form = document.getElementById('explorer-form');
+    const tableSelect = document.getElementById('table-select');
+    const columnSelect = document.getElementById('column-select');
+    const searchValueInput = document.getElementById('search-value');
+    const searchButton = document.getElementById('search-button');
+    const resultsArea = document.getElementById('results-area');
+    const paginationArea = document.getElementById('pagination-area');
+
+    let currentQuery = {};
+
+    const showAlert = (message, type = 'danger') => {
+        resultsArea.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+    };
+
+    const toggleLoading = (isLoading) => {
+        searchButton.disabled = isLoading;
+        if (isLoading) {
+            searchButton.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Searching...`;
+        } else {
+            searchButton.innerHTML = `<i class="bi bi-search"></i> Search`;
+        }
+    };
+
+    const resetColumnSelect = () => {
+        columnSelect.innerHTML = '<option selected>-- Select a table first --</option>';
+        columnSelect.disabled = true;
+        searchValueInput.disabled = true;
+        searchValueInput.value = '';
+        searchButton.disabled = true;
+    };
+
+    tableSelect.addEventListener('change', async () => {
+        const tableName = tableSelect.value;
+        resetColumnSelect();
+        if (!tableName) return;
+
+        try {
+            const response = await fetch(`/api/admin/explorer/columns/${tableName}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Could not fetch columns.');
+
+            columnSelect.innerHTML = '<option value="" selected disabled>-- Choose a column --</option>';
+            data.columns.forEach(col => {
+                const option = new Option(col, col);
+                columnSelect.appendChild(option);
+            });
+            columnSelect.disabled = false;
+        } catch (error) {
+            console.error(error);
+            showAlert(`Error: ${error.message}`);
+        }
+    });
+
+    columnSelect.addEventListener('change', () => {
+        searchValueInput.disabled = !columnSelect.value;
+    });
+    
+    searchValueInput.addEventListener('input', () => {
+        searchButton.disabled = !columnSelect.value || !searchValueInput.value.trim();
+    });
+
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        currentQuery = {
+            table: tableSelect.value,
+            column: columnSelect.value,
+            value: searchValueInput.value.trim()
+        };
+        if (currentQuery.table && currentQuery.column && currentQuery.value) {
+            loadResults(1);
+        }
+    });
+
+    async function loadResults(page) {
+        if (!currentQuery.table) return;
+        
+        const params = new URLSearchParams({ ...currentQuery, page });
+        resultsArea.innerHTML = `<div class="text-center p-5"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>`;
+        paginationArea.innerHTML = '';
+        toggleLoading(true);
+
+        try {
+            const response = await fetch(`/api/admin/explorer/query?${params.toString()}`);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Search failed.');
+            
+            renderTable(data);
+            renderPagination(data);
+
+        } catch (error) {
+            console.error(error);
+            showAlert(error.message);
+        } finally {
+            toggleLoading(false);
+        }
+    }
+
+    function renderTable(data) {
+        if (data.total === 0) {
+            resultsArea.innerHTML = `<div class="alert alert-secondary text-center">No records found matching your criteria.</div>`;
+            return;
+        }
+
+        let tableHtml = `<p class="text-muted small">Showing ${data.items.length} of ${data.total} total results.</p>`;
+        tableHtml += `<div class="table-responsive"><table class="table table-striped table-bordered table-sm"><thead><tr>`;
+        data.columns.forEach(col => {
+            tableHtml += `<th>${col}</th>`;
+        });
+        tableHtml += `</tr></thead><tbody>`;
+
+        data.items.forEach(item => {
+            tableHtml += `<tr>`;
+            data.columns.forEach(col => {
+                let value = item[col];
+                if (value === null) {
+                    value = '<em>NULL</em>';
+                } else if (typeof value === 'string' && value.length > 150) {
+                    value = `<span title="${escape(value)}">${escape(value.substring(0, 150))}...</span>`;
+                } else {
+                    value = escape(value);
+                }
+                tableHtml += `<td>${value}</td>`;
+            });
+            tableHtml += `</tr>`;
+        });
+
+        tableHtml += `</tbody></table></div>`;
+        resultsArea.innerHTML = tableHtml;
+    }
+    
+    function escape(str) {
+        if (typeof str !== 'string') return str;
+        return str.replace(/[&<>"']/g, function(match) {
+            return {
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[match];
+        });
+    }
+
+    function renderPagination(data) {
+        if (data.pages <= 1) return;
+        let html = '<ul class="pagination justify-content-center">';
+        html += `<li class="page-item ${data.page === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page - 1}">«</a></li>`;
+        // Simplified pagination links for many pages
+        let start = Math.max(1, data.page - 2);
+        let end = Math.min(data.pages, data.page + 2);
+        if (start > 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        for (let i = start; i <= end; i++) {
+            html += `<li class="page-item ${i === data.page ? 'active' : ''}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
+        }
+        if (end < data.pages) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        html += `<li class="page-item ${data.page === data.pages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page + 1}">»</a></li>`;
+        html += '</ul>';
+        paginationArea.innerHTML = html;
+
+        paginationArea.querySelectorAll('.page-link').forEach(link => {
+            link.addEventListener('click', e => {
+                e.preventDefault();
+                const page = e.target.dataset.page;
+                if (page && !link.closest('.disabled')) loadResults(parseInt(page));
+            });
+        });
+    }
+});
+</script>
+{% endblock %}

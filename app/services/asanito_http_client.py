@@ -29,7 +29,7 @@ class AsanitoHttpClient:
         self.service = asanito_service
         self.log_prefix = f"AsanitoClient ({job_id})"
 
-    def request(self, method, endpoint_template, path_params=None, query_params=None, body_payload=None, timeout=30.0):
+    def request(self, method, endpoint_template, path_params=None, query_params=None, body_payload=None, timeout=90.0):
         """
         Makes an authenticated request to the Asanito API.
 

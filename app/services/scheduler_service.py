@@ -1,3 +1,4 @@
+# start of app/services/scheduler_service.py
 # app/services/scheduler_service.py
 import os
 import importlib
@@ -5,37 +6,66 @@ import logging
 from apscheduler.triggers.cron import CronTrigger
 
 from app.models import JobConfig
-# --- IMPORT THE SCHEDULER INSTANCE ---
 from app import db, scheduler
 
 logger = logging.getLogger(__name__)
 
 
-# --- NEW WRAPPER FUNCTION ---
-def job_wrapper(job_path_str):
+def job_wrapper(job_id, job_path_str):
     """
-    A generic wrapper that creates a Flask application context
-    before running the actual job function.
+    A generic wrapper that implements a concurrency lock and creates a 
+    Flask application context before running the actual job function.
+    This is the entry point for all scheduled job executions.
     """
-    # Flask-APScheduler conveniently stores the app reference on the scheduler object
     with scheduler.app.app_context():
-        logger.info(f"Context created for scheduled job: {job_path_str}")
+        # --- ACQUIRE LOCK ---
+        # Use a transaction to check for a running job and acquire the lock atomically.
+        with db.engine.connect() as connection:
+            with connection.begin(): # Start a transaction
+                running_job_result = connection.execute(
+                    db.text("SELECT job_id, name FROM dbo.job_config WHERE is_running = 1")
+                ).first()
+
+                if running_job_result:
+                    running_job_id, running_job_name = running_job_result
+                    logger.warning(f"Skipping scheduled run of '{job_id}': Job '{running_job_name} ({running_job_id})' is already running.")
+                    return # Exit if another job is running
+
+                # No job is running, so acquire the lock for the current job.
+                # Reset the cancellation flag at the start of a new run.
+                connection.execute(
+                    db.text("UPDATE dbo.job_config SET is_running = 1, cancellation_requested = 0 WHERE job_id = :job_id"),
+                    {'job_id': job_id}
+                )
+        
+        logger.info(f"Lock acquired for job '{job_id}'. Context created for: {job_path_str}")
+        
         try:
-            # Dynamically import the module and get the function
+            # --- EXECUTE THE ACTUAL JOB ---
             module_path, func_name = job_path_str.rsplit(':', 1)
             module = importlib.import_module(module_path)
             job_func = getattr(module, func_name)
-            
-            # Execute the actual job logic (e.g., run_job())
             job_func()
-            logger.info(f"Scheduled job {job_path_str} finished successfully.")
+            logger.info(f"Scheduled job '{job_path_str}' finished successfully.")
+
         except Exception as e:
-            logger.error(f"Exception in scheduled job {job_path_str}: {e}", exc_info=True)
+            logger.error(f"Exception during execution of job '{job_path_str}': {e}", exc_info=True)
+        finally:
+            # --- RELEASE LOCK ---
+            # This block *always* runs, even if the job crashes, ensuring the lock is released.
+            with db.engine.connect() as connection:
+                with connection.begin():
+                    connection.execute(
+                        db.text("UPDATE dbo.job_config SET is_running = 0 WHERE job_id = :job_id"),
+                        {'job_id': job_id}
+                    )
+            logger.info(f"Lock released for job: {job_id}")
 
 
 def load_and_schedule_jobs(app, scheduler):
     """
-    Discovers jobs, syncs with DB, and schedules them using the job_wrapper.
+    Discovers jobs from the filesystem, syncs their configuration with the database,
+    and schedules them with the concurrency-safe wrapper.
     """
     jobs_dir = os.path.join(app.root_path, 'jobs')
     logger.info(f"Searching for jobs in: {jobs_dir}")
@@ -54,12 +84,25 @@ def load_and_schedule_jobs(app, scheduler):
                 logger.error(f"Failed to load job from {module_name}: {e}", exc_info=True)
 
     with app.app_context():
+        # On application startup, reset any stale running flags. This handles cases
+        # where the application was terminated abruptly without releasing a lock.
+        logger.info("Resetting all 'is_running' flags on scheduler startup.")
+        JobConfig.query.update({JobConfig.is_running: False, JobConfig.cancellation_requested: False})
+        db.session.commit()
+        
+        # Get all job IDs currently in the scheduler
+        scheduled_job_ids = {job.id for job in scheduler.get_jobs()}
+        
+        db_job_configs = {config.job_id: config for config in JobConfig.query.all()}
+        discovered_job_ids = set()
+
         for job_file_config in discovered_jobs:
             job_id = job_file_config.get('id')
             if not job_id:
                 continue
-
-            job_db_config = JobConfig.query.filter_by(job_id=job_id).first()
+            
+            discovered_job_ids.add(job_id)
+            job_db_config = db_job_configs.get(job_id)
 
             if not job_db_config:
                 logger.info(f"New job '{job_id}' discovered. Seeding configuration to database.")
@@ -75,21 +118,30 @@ def load_and_schedule_jobs(app, scheduler):
                 db.session.add(job_db_config)
                 db.session.commit()
             
+            # Schedule or remove the job based on its 'is_enabled' flag in the DB
             if job_db_config.is_enabled:
                 logger.info(f"Scheduling job '{job_db_config.name}' with context wrapper.")
-                
                 trigger = CronTrigger(**job_db_config.trigger_args)
                 
-                # --- THIS IS THE KEY CHANGE ---
                 scheduler.add_job(
                     id=job_db_config.job_id,
-                    # We always schedule the WRAPPER function
                     func=job_wrapper,
-                    # We pass the REAL job's path as an argument to the wrapper
-                    args=[job_file_config['func']],
+                    args=[job_db_config.job_id, job_file_config['func']],
                     trigger=trigger,
                     name=job_db_config.name,
                     replace_existing=True
                 )
             else:
-                logger.info(f"Job '{job_db_config.name}' is disabled. Not scheduling.")
+                if scheduler.get_job(job_db_config.job_id):
+                    scheduler.remove_job(job_db_config.job_id)
+                    logger.info(f"Removed disabled job '{job_db_config.name}' from scheduler.")
+                else:
+                    logger.info(f"Job '{job_db_config.name}' is disabled. Not scheduling.")
+
+        # Clean up jobs from scheduler that are no longer in the database or discovered files
+        jobs_to_remove = scheduled_job_ids - discovered_job_ids
+        for job_id in jobs_to_remove:
+            if scheduler.get_job(job_id):
+                scheduler.remove_job(job_id)
+                logger.warning(f"Removed orphaned job '{job_id}' from scheduler as it's no longer discovered or in DB.")
+# end of app/services/scheduler_service.py

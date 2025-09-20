@@ -1,5 +1,4 @@
 # start of app/jobs/sync_products_job.py
-# start of app/jobs/sync_products_job.py
 # app/jobs/sync_products_job.py
 import logging
 import time
@@ -11,7 +10,7 @@ from app.services.db_repositories import ServiceRepository
 from app.services.asanito_service import AsanitoService
 from app.services.asanito_http_client import AsanitoHttpClient
 from app.services.mapping_service import get_mapping, MappingNotFoundError
-from app.models import SyncLog
+from app.models import SyncLog, JobConfig
 from app import db
 
 logger = logging.getLogger(__name__)
@@ -81,7 +80,6 @@ def run_job():
         asanito_service = AsanitoService()
         api_client = AsanitoHttpClient(asanito_service, job_id=job_id)
         
-        # --- FIX: Initialize log lists and counters here ---
         success_count, fail_count, skipped_count = 0, 0, 0
         synced_items, failed_items, skipped_items = [], [], []
 
@@ -94,8 +92,15 @@ def run_job():
             category_cache = {}
             
             for unit in work_units:
+                job_config = JobConfig.query.filter_by(job_id=job_id).first()
+                if job_config and job_config.cancellation_requested:
+                    logger.warning("Termination requested by user. Halting job processing.")
+                    skipped_items.append({'item': 'ALL REMAINING', 'reason': 'Job terminated by user.'})
+                    break
+                
                 action, data_row = unit['action'], unit['new_data_row']
                 record_identifier = f"Product '{data_row.get('title')}' (PK: {data_row['serviceVid']})"
+                asanito_id_for_failure = unit.get('asanito_id')
                 
                 try:
                     logger.info(f"Processing {record_identifier} with action: {action}")
@@ -136,28 +141,27 @@ def run_job():
                             raise ValueError("Sync successful but received no Asanito ID.")
                     else:
                         error_message = response.get('error', 'Unknown error')
-                        if status_code >= 400 and status_code < 500:
-                            logger.error(f"Failed to process {record_identifier} with a {status_code} error: {error_message}")
-                            ServiceRepository.finalize_work_unit(unit, 'FAILED', message=f"API Error ({status_code}): {error_message}")
-                            fail_count += 1
-                            failed_items.append({'item': record_identifier, 'error': error_message, 'action': action})
-                        else:
-                            raise ValueError(f"API Error ({status_code}): {error_message}")
+                        raise ValueError(f"API Error ({status_code}): {error_message}")
                 
-                except (MappingNotFoundError, ValueError, ConnectionError) as item_error:
-                    error_message = str(item_error)
-                    logger.warning(f"Marking {record_identifier} as SKIPPED: {error_message}")
-                    # Use finalize_work_unit to update ONLY the latest record
-                    ServiceRepository.finalize_work_unit(unit, 'SKIPPED', message=error_message)
+                except MappingNotFoundError as e:
+                    logger.warning(f"Marking {record_identifier} as SKIPPED: {e}")
+                    ServiceRepository.finalize_work_unit(unit, 'SKIPPED', message=str(e))
                     skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': error_message, 'action': action})
-                except Exception as item_error:
-                    logger.error(f"CRITICAL failure processing {record_identifier}, will be retried: {item_error}", exc_info=True)
+                    skipped_items.append({'item': record_identifier, 'reason': str(e), 'action': action})
+
+                except (ValueError, ConnectionError) as e:
+                    logger.error(f"Failed to process {record_identifier}: {e}")
+                    ServiceRepository.finalize_work_unit(unit, 'FAILED', asanito_id=asanito_id_for_failure, message=str(e))
+                    fail_count += 1
+                    failed_items.append({'item': record_identifier, 'error': str(e), 'action': action})
+
+                except Exception as e:
+                    logger.error(f"CRITICAL unhandled exception on {record_identifier}: {e}", exc_info=True)
                     skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(item_error)}", 'action': action})
+                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(e)}", 'action': action})
 
             status = 'FAILURE' if fail_count > 0 else 'SUCCESS'
-            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped for Retry: {skipped_count}."
+            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped/Retrying: {skipped_count}."
             log_details = {'synced_items': synced_items, 'failed_items': failed_items, 'skipped_items': skipped_items}
 
         duration = time.time() - start_time
@@ -174,3 +178,4 @@ def run_job():
             db.session.commit()
         except Exception as log_e:
             logger.error(f"CRITICAL: Failed to write final failure log to database: {log_e}")
+# end of app/jobs/sync_products_job.py

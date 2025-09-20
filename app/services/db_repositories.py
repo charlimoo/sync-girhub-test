@@ -107,8 +107,15 @@ class BaseRepository:
         logger.info(f"Finding work units in {cls.__table_name__} based on fetchStatus...")
         grouping_key = cls.get_grouping_key()
         
+        # Define a batch size for how many groups to process per run.
+        # This is the core of the scalability fix.
+        # If a JOB_RECORD_LIMIT is set for testing, use that, otherwise use a safe default.
+        batch_size = limit if limit else 200
+
+        # This query now only selects a small batch of pending group keys,
+        # making it extremely fast and lightweight.
         query_for_keys = f"""
-            SELECT DISTINCT T1.[{grouping_key}]
+            SELECT DISTINCT TOP {batch_size} T1.[{grouping_key}]
             FROM {cls.__table_name__} AS T1
             WHERE EXISTS (
                 SELECT 1
@@ -116,6 +123,7 @@ class BaseRepository:
                 WHERE T2.[{grouping_key}] = T1.[{grouping_key}] 
                 AND (T2.fetchStatus IS NULL OR T2.fetchStatus = 'SKIPPED')
             )
+            ORDER BY T1.[{grouping_key}] -- Add ordering for consistency
         """
         
         pending_key_rows = execute_query(query_for_keys)
@@ -124,51 +132,28 @@ class BaseRepository:
             return []
         
         pending_keys = [row[grouping_key] for row in pending_key_rows if row[grouping_key] is not None]
+        logger.info(f"Found a batch of {len(pending_keys)} unique pending groups to process.")
         
-        # --- BATCHING LOGIC TO PREVENT PARAMETER OVERLOAD ---
-        # This loop is the core of the fix for scalability.
-        batch_size = 1800  # A safe number well below the 2100 limit.
-        all_relevant_records = []
+        # Now, fetch all records related ONLY to this small batch of keys.
+        all_relevant_records = cls.where(**{f"{grouping_key}__in": pending_keys})
         
-        logger.info(f"Found {len(pending_keys)} unique pending groups. Fetching full records in batches of {batch_size}...")
-        
-        for i in range(0, len(pending_keys), batch_size):
-            batch_keys = pending_keys[i:i + batch_size]
-            if not batch_keys:
-                continue
-            
-            logger.debug(f"Fetching record batch {i//batch_size + 1} of {len(pending_keys)//batch_size + 1}...")
-            batch_records = cls.where(**{f"{grouping_key}__in": batch_keys})
-            all_relevant_records.extend(batch_records)
-        # --- END OF BATCHING LOGIC ---
-        
+        # The rest of the logic remains the same, but operates on a much smaller dataset.
         all_relevant_records.sort(key=lambda r: (r.get(grouping_key) or '', -(r.get('idd') or 0)))
 
         work_units = []
         for key, group in itertools.groupby(all_relevant_records, key=lambda r: r.get(grouping_key)):
             if key is None: continue
-            
             group_records = list(group)
             
-            latest_pending_record = None
-            for record in group_records:
-                if record.get('fetchStatus') is None or record.get('fetchStatus') == 'SKIPPED':
-                    latest_pending_record = record
-                    break
+            latest_pending_record = next((r for r in group_records if r.get('fetchStatus') is None or r.get('fetchStatus') == 'SKIPPED'), None)
 
             if not latest_pending_record:
-                logger.warning(f"Group '{key}' was selected for processing but contains no pending (NULL/SKIPPED) records. Skipping.")
+                logger.warning(f"Group '{key}' was selected but contains no pending records. Skipping.")
                 continue
 
             all_pks_in_group = [r[cls.__primary_key__] for r in group_records]
 
-            asanito_id_found = None
-            for record in group_records:
-                current_asanito_id = record.get(cls.__asanito_id_field__)
-                is_valid_id = current_asanito_id is not None and str(current_asanito_id) not in ('', '0', '1')
-                if is_valid_id:
-                    asanito_id_found = current_asanito_id
-                    break
+            asanito_id_found = next((r.get(cls.__asanito_id_field__) for r in group_records if r.get(cls.__asanito_id_field__) and str(r.get(cls.__asanito_id_field__)) not in ('', '0', '1')), None)
             
             action = 'UPDATE' if asanito_id_found else 'CREATE'
             
@@ -178,8 +163,8 @@ class BaseRepository:
                 'all_pks_in_group': all_pks_in_group
             })
         
-        logger.info(f"Generated {len(work_units)} work units from {len(pending_keys)} pending groups.")
-        return work_units[:limit] if limit else work_units
+        logger.info(f"Generated {len(work_units)} work units from the batch of pending groups.")
+        return work_units
 
     @classmethod
     def finalize_work_unit(cls, work_unit, status, asanito_id=None, message=None):

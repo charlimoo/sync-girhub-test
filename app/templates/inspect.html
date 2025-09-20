@@ -1,3 +1,4 @@
+
 {% extends "base.html" %}
 
 {% block content %}
@@ -6,7 +7,7 @@
         <h2>Inspect Database State</h2>
     </div>
 
-    <!-- Main Tab Navigation (for tables) -->
+    <!-- Main Tab Navigation -->
     <ul class="nav nav-tabs" id="inspectTab" role="tablist">
         {% for table_name, config in tables.items() %}
         <li class="nav-item" role="presentation">
@@ -14,7 +15,8 @@
                     id="{{ table_name }}-tab-main" 
                     data-bs-toggle="tab" 
                     data-bs-target="#{{ table_name }}-pane" 
-                    type="button" role="tab" data-table-name="{{ table_name }}">
+                    type="button" role="tab" data-table-name="{{ table_name }}"
+                    data-pk-column="{{ config.pk }}">
                 {{ config.display_name }}
             </button>
         </li>
@@ -27,25 +29,43 @@
         <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ table_name }}-pane" role="tabpanel">
             <div class="card card-body border-top-0 rounded-bottom">
                 
-                <!-- Stats Section -->
+                <!-- Stats Section (dynamically loaded) -->
                 <div id="stats-{{ table_name }}" class="row g-3 mb-4 text-center"></div>
                 
                 <!-- Sub-tabs for Errored vs. Skipped -->
                 <ul class="nav nav-pills mb-3" id="pills-tab-{{table_name}}" role="tablist">
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#pills-failed-{{table_name}}" type="button">Errored Records</button>
+                        <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#pills-failed-{{table_name}}" type="button" data-status="failed">Errored Records</button>
                     </li>
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-skipped-{{table_name}}" type="button">Skipped Records</button>
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#pills-skipped-{{table_name}}" type="button" data-status="skipped">Skipped Records</button>
                     </li>
                 </ul>
 
                 <div class="tab-content">
                     <div class="tab-pane fade show active" id="pills-failed-{{table_name}}" role="tabpanel">
+                        <div class="d-flex justify-content-end mb-2 gap-2">
+                             <button class="btn btn-sm btn-primary btn-retry-all" data-table-name="{{ table_name }}" disabled>
+                                <i class="bi bi-arrow-clockwise"></i> Retry All
+                            </button>
+                             <button class="btn btn-sm btn-outline-success btn-download-csv" data-table-name="{{ table_name }}" data-status="failed" disabled>
+                                <i class="bi bi-download"></i> Download Full CSV
+                            </button>
+                        </div>
                         <div id="failed-records-{{ table_name }}"></div>
+                        <nav id="pagination-failed-{{ table_name }}" class="mt-3"></nav>
                     </div>
                     <div class="tab-pane fade" id="pills-skipped-{{table_name}}" role="tabpanel">
+                         <div class="d-flex justify-content-end mb-2 gap-2">
+                            <button class="btn btn-sm btn-secondary btn-ignore-all" data-table-name="{{ table_name }}" disabled>
+                                <i class="bi bi-eye-slash-fill"></i> Ignore All
+                            </button>
+                            <button class="btn btn-sm btn-outline-success btn-download-csv" data-table-name="{{ table_name }}" data-status="skipped" disabled>
+                                <i class="bi bi-download"></i> Download Full CSV
+                            </button>
+                        </div>
                          <div id="skipped-records-{{ table_name }}"></div>
+                         <nav id="pagination-skipped-{{ table_name }}" class="mt-3"></nav>
                     </div>
                 </div>
 
@@ -59,27 +79,53 @@
 document.addEventListener('DOMContentLoaded', function() {
     const inspectTab = document.getElementById('inspectTab');
 
-    async function loadTabData(tableName) {
-        const statsContainer = document.getElementById(`stats-${tableName}`);
-        const failedContainer = document.getElementById(`failed-records-${tableName}`);
-        const skippedContainer = document.getElementById(`skipped-records-${tableName}`);
-        
-        statsContainer.innerHTML = `<div class="spinner-border text-primary mx-auto" role="status"><span class="visually-hidden">Loading...</span></div>`;
-        failedContainer.innerHTML = '';
-        skippedContainer.innerHTML = '';
+    const showAlert = (container, message, type = 'danger') => {
+        container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+    };
 
+    const renderSpinner = (container) => {
+        container.innerHTML = `<div class="text-center p-4"><div class="spinner-border text-secondary" role="status"><span class="visually-hidden">Loading...</span></div></div>`;
+    };
+
+    async function loadStats(tableName) {
+        const statsContainer = document.getElementById(`stats-${tableName}`);
+        renderSpinner(statsContainer);
         try {
             const response = await fetch(`/inspect/data/${tableName}`);
             if (!response.ok) throw new Error('Network response was not ok.');
             
             const data = await response.json();
             renderStats(statsContainer, data.stats);
-            renderRecordsTable(failedContainer, data.failed_records, tableName, data.pk_column, 'failed');
-            renderRecordsTable(skippedContainer, data.skipped_records, tableName, data.pk_column, 'skipped');
+            // Enable/disable buttons based on counts
+            document.querySelector(`.btn-retry-all[data-table-name="${tableName}"]`).disabled = data.stats.failed === 0;
+            document.querySelector(`.btn-download-csv[data-table-name="${tableName}"][data-status="failed"]`).disabled = data.stats.failed === 0;
+            document.querySelector(`.btn-ignore-all[data-table-name="${tableName}"]`).disabled = data.stats.skipped === 0;
+            document.querySelector(`.btn-download-csv[data-table-name="${tableName}"][data-status="skipped"]`).disabled = data.stats.skipped === 0;
 
         } catch (error) {
-            console.error('Failed to fetch inspection data:', error);
-            statsContainer.innerHTML = `<div class="alert alert-danger">Failed to load statistics.</div>`;
+            console.error('Failed to fetch stats:', error);
+            showAlert(statsContainer, 'Failed to load statistics.');
+        }
+    }
+
+    async function loadRecords(tableName, status, page = 1) {
+        const container = document.getElementById(`${status}-records-${tableName}`);
+        const paginationContainer = document.getElementById(`pagination-${status}-${tableName}`);
+        renderSpinner(container);
+        paginationContainer.innerHTML = '';
+
+        try {
+            const response = await fetch(`/api/inspect/records/${tableName}/${status}?page=${page}`);
+            if (!response.ok) throw new Error('Network response was not ok.');
+            
+            const data = await response.json();
+            const pkColumn = document.querySelector(`#${tableName}-tab-main`).dataset.pkColumn;
+            renderRecordsTable(container, data.items, tableName, pkColumn, status);
+            renderPagination(paginationContainer, tableName, status, data);
+
+        } catch (error) {
+            console.error(`Failed to fetch ${status} records:`, error);
+            showAlert(container, 'Failed to load records.');
         }
     }
 
@@ -88,18 +134,17 @@ document.addEventListener('DOMContentLoaded', function() {
             <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.total}</h5><small class="text-muted">Total</small></div></div>
             <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.synced}</h5><small class="text-muted">Synced</small></div></div>
             <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.pending}</h5><small class="text-muted">Pending</small></div></div>
-            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.failed}</h5><small class="text-muted text-danger">Errored</small></div></div>
-            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.skipped}</h5><small class="text-muted text-warning">Skipped</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5 class="text-danger">${stats.failed}</h5><small class="text-muted">Errored</small></div></div>
+            <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5 class="text-warning">${stats.skipped}</h5><small class="text-muted">Skipped</small></div></div>
             <div class="col-lg-2 col-md-4"><div class="p-3 border bg-light rounded"><h5>${stats.superseded}</h5><small class="text-muted">Superseded</small></div></div>
         `;
     }
 
     function renderRecordsTable(container, records, tableName, pkColumn, type) {
         if (!records || records.length === 0) {
-            container.innerHTML = `<div class="alert alert-secondary">No ${type} records found.</div>`;
+            container.innerHTML = `<div class="alert alert-secondary text-center">No ${type} records found.</div>`;
             return;
         }
-
         const isFailed = type === 'failed';
         const btnClass = isFailed ? 'btn-outline-primary' : 'btn-outline-secondary';
         const btnIcon = isFailed ? 'bi-arrow-clockwise' : 'bi-eye-slash';
@@ -107,79 +152,187 @@ document.addEventListener('DOMContentLoaded', function() {
         const btnAction = isFailed ? 'btn-retry' : 'btn-ignore';
         const messageClass = isFailed ? 'text-danger' : 'text-warning';
 
-        let tableHtml = `
-            <div class="table-responsive">
-                <table class="table table-sm table-bordered">
-                    <thead><tr>
+        let tableHtml = `<div class="table-responsive"><table class="table table-sm table-bordered"><thead><tr>
                         <th>${pkColumn}</th>
                         <th>Reason / Message</th>
                         <th style="width: 10%;">Action</th>
-                    </tr></thead>
-                    <tbody>`;
-        
+                    </tr></thead><tbody>`;
         records.forEach(record => {
             const pkValue = record[pkColumn];
-            tableHtml += `
-                <tr id="row-${tableName}-${pkValue}">
+            tableHtml += `<tr id="row-${tableName}-${pkValue}">
                     <td style="font-family: monospace; font-size: 0.8rem;">${pkValue}</td>
-                    <td class="${messageClass}">${record.fetchMessage || 'No message provided.'}</td>
+                    <td class="${messageClass}" title="${record.fetchMessage || ''}">${record.fetchMessage || 'No message provided.'}</td>
                     <td>
-                        <button class="btn btn-sm ${btnClass} ${btnAction}" 
-                                data-table-name="${tableName}" 
-                                data-pk-value="${pkValue}">
+                        <button class="btn btn-sm ${btnClass} ${btnAction}" data-table-name="${tableName}" data-pk-value="${pkValue}">
                             <i class="bi ${btnIcon}"></i> ${btnText}
                         </button>
                     </td>
                 </tr>`;
         });
-
         tableHtml += `</tbody></table></div>`;
         container.innerHTML = tableHtml;
     }
 
-    inspectTab.addEventListener('shown.bs.tab', event => {
-        loadTabData(event.target.dataset.tableName);
+    function renderPagination(container, tableName, status, data) {
+        if (data.pages <= 1) return;
+        let html = '<ul class="pagination justify-content-center">';
+        html += `<li class="page-item ${data.page === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page - 1}">«</a></li>`;
+        let start = Math.max(1, data.page - 2), end = Math.min(data.pages, data.page + 2);
+        if (start > 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        for (let i = start; i <= end; i++) {
+            html += `<li class="page-item ${i === data.page ? 'active' : ''}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
+        }
+        if (end < data.pages) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        html += `<li class="page-item ${data.page === data.pages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page + 1}">»</a></li>`;
+        html += '</ul>';
+        container.innerHTML = html;
+        container.querySelectorAll('.page-link').forEach(link => {
+            link.addEventListener('click', e => {
+                e.preventDefault();
+                const page = e.target.dataset.page;
+                if (page && !link.closest('.disabled')) loadRecords(tableName, status, parseInt(page));
+            });
+        });
+    }
+    
+    // Main Tab Switching
+    inspectTab.addEventListener('shown.bs.tab', async event => {
+        const tableName = event.target.dataset.tableName;
+        await loadStats(tableName);
+        const activePill = document.querySelector(`#pills-tab-${tableName} .nav-link.active`);
+        loadRecords(tableName, activePill.dataset.status, 1);
     });
 
+    // Sub-Tab (Pills) Switching
+    document.querySelectorAll('.nav-pills .nav-link').forEach(pill => {
+        pill.addEventListener('shown.bs.tab', event => {
+            const pane = event.target.closest('.tab-pane.show.active');
+            const tableName = pane.id.replace('-pane', '');
+            const status = event.target.dataset.status;
+            loadRecords(tableName, status, 1);
+        });
+    });
+
+    // Delegated Event Listener for ALL buttons inside the tab content
     document.getElementById('inspectTabContent').addEventListener('click', async function(event) {
-        const button = event.target.closest('.btn-retry, .btn-ignore');
+        const button = event.target.closest('button');
         if (!button) return;
 
         const tableName = button.dataset.tableName;
-        const pkValue = button.dataset.pkValue;
-        const isRetry = button.classList.contains('btn-retry');
-        const endpoint = isRetry ? 'retry' : 'ignore';
-        const confirmationText = isRetry 
-            ? `Are you sure you want to re-queue record '${pkValue}' for synchronization?`
-            : `Are you sure you want to permanently ignore record '${pkValue}'? This action cannot be easily undone.`;
 
-        if (!confirm(confirmationText)) return;
+        // --- Handle Individual Actions ---
+        if (button.matches('.btn-retry, .btn-ignore')) {
+            const pkValue = button.dataset.pkValue;
+            const isRetry = button.classList.contains('btn-retry');
+            const endpoint = isRetry ? 'retry' : 'ignore';
+            const confirmationText = isRetry 
+                ? `Are you sure you want to re-queue record '${pkValue}'?`
+                : `Are you sure you want to permanently ignore record '${pkValue}'?`;
 
-        button.disabled = true;
-        button.innerHTML = `<span class="spinner-border spinner-border-sm"></span>`;
-        
-        try {
-            const response = await fetch(`/inspect/${endpoint}/${tableName}/${pkValue}`, { method: 'POST' });
-            if (!response.ok) throw new Error('Request failed.');
+            if (!confirm(confirmationText)) return;
+            button.disabled = true;
+            button.innerHTML = `<span class="spinner-border spinner-border-sm"></span>`;
             
-            const row = document.getElementById(`row-${tableName}-${pkValue}`);
-            if(row) {
-                row.style.opacity = '0';
-                setTimeout(() => row.remove(), 300);
+            try {
+                const response = await fetch(`/inspect/${endpoint}/${tableName}/${pkValue}`, { method: 'POST' });
+                if (!response.ok) throw new Error('Request failed.');
+                const row = document.getElementById(`row-${tableName}-${pkValue}`);
+                if(row) {
+                    row.style.opacity = '0';
+                    setTimeout(() => {
+                        row.remove();
+                        const tableBody = button.closest('tbody');
+                        if (tableBody && tableBody.children.length === 0) loadRecords(tableName, isRetry ? 'failed' : 'skipped', 1);
+                    }, 300);
+                }
+                loadStats(tableName);
+            } catch (error) {
+                console.error(`${endpoint} action failed:`, error);
+                alert(`Failed to ${endpoint} record. See console for details.`);
+                button.disabled = false;
+                button.innerHTML = isRetry ? `<i class="bi bi-arrow-clockwise"></i> Retry` : `<i class="bi bi-eye-slash"></i> Ignore`;
             }
-        } catch (error) {
-            console.error(`${endpoint} action failed:`, error);
-            alert(`Failed to ${endpoint} record. See console for details.`);
-            button.disabled = false;
-            button.innerHTML = isRetry 
-                ? `<i class="bi bi-arrow-clockwise"></i> Retry`
-                : `<i class="bi bi-eye-slash"></i> Ignore`;
+        }
+
+        // --- Handle Bulk Actions ---
+        if (button.matches('.btn-retry-all, .btn-ignore-all')) {
+            const isRetryAll = button.classList.contains('btn-retry-all');
+            const action = isRetryAll ? 'retry_all' : 'ignore_all';
+            const actionVerb = isRetryAll ? 'retry' : 'ignore';
+            const status = isRetryAll ? 'failed' : 'skipped';
+            const confirmationText = `Are you sure you want to ${actionVerb} ALL ${status} records for this table? This cannot be undone.`;
+
+            if (!confirm(confirmationText)) return;
+            const originalText = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Processing...`;
+            
+            try {
+                const response = await fetch(`/inspect/bulk_action/${tableName}/${action}`, { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Bulk action failed.');
+                alert(data.message);
+                await loadStats(tableName);
+                await loadRecords(tableName, status, 1);
+            } catch (error) {
+                console.error(`Bulk action '${action}' failed:`, error);
+                alert(`Failed to perform bulk action. See console for details.`);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        }
+
+        // --- Handle CSV Download ---
+        if (button.matches('.btn-download-csv')) {
+            const status = button.dataset.status;
+            const originalText = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Preparing...`;
+
+            try {
+                const response = await fetch(`/inspect/export/${tableName}/${status}.csv`);
+                if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
+
+                const totalSize = parseInt(response.headers.get('Content-Length'), 10);
+                let loadedSize = 0;
+                const chunks = [];
+                const reader = response.body.getReader();
+
+                while(true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    loadedSize += value.length;
+                    const percent = (totalSize && totalSize > 0) ? Math.round((loadedSize / totalSize) * 100) : 0;
+                    button.innerHTML = `<span class="spinner-border spinner-border-sm"></span> Downloading... ${percent}%`;
+                }
+
+                const blob = new Blob(chunks, { type: 'text/csv;charset=utf-8;' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none'; a.href = url;
+                a.download = `${tableName}_${status}_export.csv`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url); a.remove();
+            } catch (error) {
+                console.error('Download failed:', error);
+                alert(`Failed to download CSV: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
         }
     });
 
+    // --- Initial Load ---
     const initialTab = document.querySelector('#inspectTab .nav-link.active');
     if (initialTab) {
-        loadTabData(initialTab.dataset.tableName);
+        const tableName = initialTab.dataset.tableName;
+        loadStats(tableName).then(() => {
+             loadRecords(tableName, 'failed', 1);
+        });
     }
 });
 </script>

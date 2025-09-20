@@ -1,5 +1,4 @@
 # start of app/jobs/sync_contacts_job.py
-# start of app/jobs/sync_contacts_job.py
 # app/jobs/sync_contacts_job.py
 import logging
 import time
@@ -11,7 +10,7 @@ from app.services.db_repositories import MembershipRepository
 from app.services.asanito_service import AsanitoService
 from app.services.asanito_http_client import AsanitoHttpClient
 from app.services.mapping_service import get_mapping, MappingNotFoundError
-from app.models import SyncLog
+from app.models import SyncLog, JobConfig
 from app import db
 from app.utils.date_converter import convert_date_for_asanito
 
@@ -30,7 +29,6 @@ def _create_custom_fields(record):
     """Helper to generate the list of custom field objects."""
     custom_fields = []
 
-    # Helper functions for different field types
     def long_field(key, name, value):
         if value is not None:
             custom_fields.append({"$type":"LongCustomField","customFieldType":"LongCustomField","discriminator":"PersonCustomField","key":key,"customName":name,"longValue":int(value),"delete":False})
@@ -42,7 +40,6 @@ def _create_custom_fields(record):
         if date_val:
             custom_fields.append({"$type":"DateTimeFieldSetting","customFieldType":"DateTimeCustomField","discriminator":"PersonCustomField","dateValue":date_val,"customName":name,"key":key,"delete":False})
 
-    # Map source columns to custom fields
     long_field("MembershipCode", "کد عضویت", record.get('MembershipCode'))
     long_field("FinancialAccountCode", "شناسه حساب مالی", record.get('FinancialAccountCode'))
     long_field("DebtorAmount", "مانده حساب در ورزش سافت", record.get('DebtorAmount'))
@@ -59,7 +56,6 @@ def _build_asanito_add_payload(record, owner_user_id):
     asanito_gender_id = get_mapping('Gender', str(db_gender), fail_on_not_found=True)
     default_city_id = get_mapping('Defaults', 'DefaultCityID', fail_on_not_found=True)
     
-    # Map RecognitionMethods to acquaintionTypeID
     acquaintion_type_id = None
     if record.get('RecognitionMethods'):
         acquaintion_type_id = get_mapping('RecognitionMethods', record['RecognitionMethods'])
@@ -76,7 +72,6 @@ def _build_asanito_add_payload(record, owner_user_id):
         "acquaintionTypeID": int(acquaintion_type_id) if acquaintion_type_id else None,
         "isMinData": False,
         "customFields": _create_custom_fields(record),
-        # Static fields
         "relatedCompanies": [], "emails": [], "webs": [], "faxes": [], "companyPartners": [],
         "personPartners": [], "workFieldIDs": [], "interactionTypeIDs": [], "introducerName": "",
     }
@@ -86,7 +81,6 @@ def _build_asanito_edit_payload(record, asanito_person_id, owner_user_id):
     db_gender = record.get('gender')
     asanito_gender_id = get_mapping('Gender', str(db_gender), fail_on_not_found=True)
 
-    # Map RecognitionMethods to acquaintionTypeID
     acquaintion_type_id = None
     if record.get('RecognitionMethods'):
         acquaintion_type_id = get_mapping('RecognitionMethods', record['RecognitionMethods'])
@@ -103,14 +97,11 @@ def _build_asanito_edit_payload(record, asanito_person_id, owner_user_id):
 
 def _build_asanito_custom_fields_payload(record, asanito_person_id):
     return {
-        "entityId": asanito_person_id,
-        "fieldType": 1,
-        "place": 4,
+        "entityId": asanito_person_id, "fieldType": 1, "place": 4,
         "customFieldDtos": _create_custom_fields(record)
     }
 
 def _handle_contact_update(api_client, data_row, asanito_id, owner_user_id):
-    """Orchestrates all API calls required for a contact update."""
     logger.info(f"Updating core info for Asanito ID: {asanito_id}")
     edit_payload = _build_asanito_edit_payload(data_row, asanito_id, owner_user_id)
     edit_response = api_client.request(method='PUT', endpoint_template='/api/asanito/Person/editLean', body_payload=edit_payload)
@@ -122,15 +113,13 @@ def _handle_contact_update(api_client, data_row, asanito_id, owner_user_id):
         existing_addresses = asanito_contact_data.get('addresses', [])
         default_city_id = get_mapping('Defaults', 'DefaultCityID', fail_on_not_found=True)
         if existing_addresses:
-            if len(existing_addresses) > 1:
-                logger.warning(f"Contact {asanito_id} has multiple addresses in Asanito. Updating the first one (ID: {existing_addresses[0]['id']}) by default.")
             address_to_edit_id = existing_addresses[0]['id']
             address_payload = {"id": address_to_edit_id, "cityID": int(default_city_id), "address": new_address_str}
             addr_response = api_client.request(method='PUT', endpoint_template='/api/asanito/Address/edit', body_payload=address_payload)
             if addr_response.get('error'):
                 logger.warning(f"Could not update address for contact {asanito_id}: {addr_response['error']}")
         else:
-            logger.warning(f"Contact {asanito_id} has a new address in source DB, but no existing address in Asanito to update. This address change will be ignored. An 'addAddress' API call would be needed.")
+            logger.warning(f"Contact {asanito_id} has a new address in source DB, but no existing address in Asanito to update. This address change will be ignored.")
     
     logger.info(f"Updating custom fields for Asanito ID: {asanito_id}")
     custom_fields_payload = _build_asanito_custom_fields_payload(data_row, asanito_id)
@@ -163,36 +152,34 @@ def run_job():
             logger.info(f"Found {len(work_units)} work units to process.")
             
             for unit in work_units:
+                job_config = JobConfig.query.filter_by(job_id=job_id).first()
+                if job_config and job_config.cancellation_requested:
+                    logger.warning("Termination requested by user. Halting job processing.")
+                    skipped_items.append({'item': 'ALL REMAINING', 'reason': 'Job terminated by user.'})
+                    break
+
                 action, data_row = unit['action'], unit['new_data_row']
                 record_identifier = f"'{data_row.get('name')} {data_row.get('lastname')}' (PK: {data_row['memberVId']})"
+                asanito_id_for_failure = unit.get('asanito_id')
                 
                 try:
                     logger.info(f"Processing {record_identifier} with action: {action}")
                     response = None
 
-                    # --- FIX: Add retry-as-create logic for stale IDs ---
-                    for attempt in range(2): # Max 2 attempts (UPDATE, then maybe CREATE)
+                    for attempt in range(2):
                         if action == 'UPDATE':
-                            try:
-                                asanito_id_to_update = unit['asanito_id']
-                                _handle_contact_update(api_client, data_row, asanito_id_to_update, owner_user_id)
-                                response = {'data': {'id': asanito_id_to_update}, 'status_code': 200}
-                                break # Success, exit loop
-                            except ValueError as e:
-                                # Check if the error is a "not found" type error from the API
-                                error_str = str(e).lower()
-                                if ("not found" in error_str or "یافت نشد" in error_str) and attempt == 0:
-                                    logger.warning(f"UPDATE for {record_identifier} failed because contact was not found. Retrying as CREATE.")
-                                    action = 'CREATE'
-                                    unit['action'] = 'CREATE'
-                                    continue # Go to the next iteration to perform CREATE
-                                else:
-                                    raise # Re-raise other ValueErrors
-
+                            asanito_id_to_update = unit['asanito_id']
+                            _handle_contact_update(api_client, data_row, asanito_id_to_update, owner_user_id)
+                            response = {'data': {'id': asanito_id_to_update}, 'status_code': 200}
+                            break
                         elif action == 'CREATE':
                             payload = _build_asanito_add_payload(data_row, owner_user_id)
                             response = api_client.request(method='POST', endpoint_template='/api/asanito/Person/addLean', body_payload=payload)
-                            break # Exit loop after create attempt
+                            if response.get('status_code') == 404 and attempt == 0 and unit['action'] == 'UPDATE':
+                                logger.warning(f"UPDATE for {record_identifier} failed with 404. Retrying as CREATE.")
+                                action = 'CREATE'
+                                continue
+                            break
                     
                     if not response: raise ValueError("No response from API action.")
 
@@ -209,28 +196,27 @@ def run_job():
                             raise ValueError("Sync successful but received no Asanito ID.")
                     else:
                         error_message = response.get('error', 'Unknown error')
-                        if status_code >= 400 and status_code < 500:
-                            logger.error(f"Failed to process {record_identifier} with a {status_code} error: {error_message}")
-                            MembershipRepository.finalize_work_unit(unit, 'FAILED', message=f"API Error ({status_code}): {error_message}")
-                            fail_count += 1
-                            failed_items.append({'item': record_identifier, 'error': error_message, 'action': action})
-                        else:
-                            raise ValueError(f"API Error ({status_code}): {error_message}")
+                        raise ValueError(f"API Error ({status_code}): {error_message}")
 
-                except (MappingNotFoundError, ValueError) as item_error:
-                    error_message = str(item_error)
-                    logger.warning(f"Marking {record_identifier} as SKIPPED: {error_message}")
-                    # Use finalize_work_unit to update ONLY the latest record
-                    MembershipRepository.finalize_work_unit(unit, 'SKIPPED', message=error_message)
+                except MappingNotFoundError as e:
+                    logger.warning(f"Marking {record_identifier} as SKIPPED: {e}")
+                    MembershipRepository.finalize_work_unit(unit, 'SKIPPED', message=str(e))
                     skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': error_message, 'action': action})
-                except Exception as item_error:
-                    logger.error(f"CRITICAL failure processing {record_identifier}, will be retried: {item_error}", exc_info=True)
-                    skipped_count += 1
-                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(item_error)}", 'action': action})
+                    skipped_items.append({'item': record_identifier, 'reason': str(e), 'action': action})
+
+                except (ValueError, ConnectionError) as e:
+                    logger.error(f"Failed to process {record_identifier}: {e}")
+                    MembershipRepository.finalize_work_unit(unit, 'FAILED', asanito_id=asanito_id_for_failure, message=str(e))
+                    fail_count += 1
+                    failed_items.append({'item': record_identifier, 'error': str(e), 'action': action})
+
+                except Exception as e:
+                    logger.error(f"CRITICAL unhandled exception on {record_identifier}: {e}", exc_info=True)
+                    skipped_count += 1 # Don't mark as failed, let it be retried as a fresh record
+                    skipped_items.append({'item': record_identifier, 'reason': f"Unhandled Exception: {str(e)}", 'action': action})
 
             status = 'FAILURE' if fail_count > 0 else 'SUCCESS'
-            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped for Retry: {skipped_count}."
+            message = f"Sync completed. Successful: {success_count}, Failed: {fail_count}, Skipped/Retrying: {skipped_count}."
             log_details = {'synced_items': synced_items, 'failed_items': failed_items, 'skipped_items': skipped_items}
 
         duration = time.time() - start_time
@@ -247,3 +233,4 @@ def run_job():
             db.session.commit()
         except Exception as log_e:
             logger.error(f"CRITICAL: Failed to write final failure log to database: {log_e}")
+# end of app/jobs/sync_contacts_job.py

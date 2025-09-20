@@ -1,3 +1,4 @@
+
 /* app/static/css/style.css */
 
 /* 1. Base & Typography */
@@ -5,6 +6,7 @@
     --color-success: #198754;
     --color-failure: #dc3545;
     --color-paused: #ffc107;
+    --color-running: #0d6efd;
     --color-active: var(--color-success);
     --color-secondary-text: #6c757d;
     --border-color: #dee2e6;
@@ -73,6 +75,7 @@ h2 {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    font-weight: 500;
 }
 
 .status-indicator::before {
@@ -89,7 +92,11 @@ h2 {
 .status-paused::before { background-color: var(--color-paused); }
 .status-active::before { background-color: var(--color-active); }
 .status-secondary::before { background-color: var(--color-secondary-text); }
-
+.status-running { color: var(--color-running); }
+.status-running::before { 
+    background-color: var(--color-running); 
+    animation: pulse 1.5s infinite;
+}
 
 /* 5. Buttons & Actions */
 .table .btn {
@@ -123,4 +130,17 @@ h2 {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* 7. Animations */
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(13, 110, 253, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 6px rgba(13, 110, 253, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(13, 110, 253, 0);
+    }
 }

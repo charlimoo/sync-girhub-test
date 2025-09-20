@@ -1,9 +1,10 @@
-
 # start of app/services/inspect_service.py
 # app/services/inspect_service.py
 import logging
+import math
 from .source_db_service import execute_query, execute_write
 from sqlalchemy import text
+from app import db 
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,6 @@ TABLE_CONFIG = {
         'grouping_key': 'id',
         'display_name': 'Service Invoices'
     },
-    # --- ADD THIS ENTRY FOR THE RECEIPT TABLE ---
     'receipt': {
         'pk': 'vID',
         'grouping_key': 'vID',
@@ -45,10 +45,6 @@ def get_table_stats(table_name):
     config = TABLE_CONFIG[table_name]
     grouping_key = config['grouping_key']
     
-    # --- START OF FIX ---
-    
-    # Query 1: Get stats for the LATEST version of each unique entity.
-    # This correctly counts Synced, Failed, Skipped, and Pending.
     latest_records_query = text(f"""
         WITH LatestRecords AS (
             SELECT
@@ -64,15 +60,7 @@ def get_table_stats(table_name):
         GROUP BY fetchStatus;
     """)
     
-    # Query 2: Get the count of ONLY superseded records.
-    # These are, by definition, not the latest version (rn > 1).
-    superseded_query = text(f"""
-        SELECT COUNT(*) as count
-        FROM dbo.{table_name}
-        WHERE fetchStatus = 'SUPERSEDED';
-    """)
-
-    # Query 3: Get the absolute total of unique entities.
+    superseded_query = text(f"SELECT COUNT(*) as count FROM dbo.{table_name} WHERE fetchStatus = 'SUPERSEDED';")
     total_query = text(f"SELECT COUNT(DISTINCT [{grouping_key}]) as total FROM dbo.{table_name}")
 
     try:
@@ -81,101 +69,123 @@ def get_table_stats(table_name):
         total_result = execute_query(total_query.text)
         
         stats = {
-            'total': total_result[0]['total'] if total_result else 0,
-            'synced': 0,
-            'pending': 0,
-            'failed': 0,
-            'skipped': 0,
+            'total': total_result[0]['total'] if total_result else 0, 'synced': 0,
+            'pending': 0, 'failed': 0, 'skipped': 0,
             'superseded': superseded_result[0]['count'] if superseded_result else 0
         }
         
         for row in latest_results:
             status = row['fetchStatus']
             count = row['count']
-            if status == 'SYNCED':
-                stats['synced'] = count
-            elif status == 'FAILED':
-                stats['failed'] = count
-            elif status == 'SKIPPED':
-                stats['skipped'] = count
-            elif status is None:
-                stats['pending'] = count
+            if status == 'SYNCED': stats['synced'] = count
+            elif status == 'FAILED': stats['failed'] = count
+            elif status == 'SKIPPED': stats['skipped'] = count
+            elif status is None: stats['pending'] = count
                 
         return stats
-    # --- END OF FIX ---
     except Exception as e:
         logger.error(f"Error calculating stats for table '{table_name}': {e}", exc_info=True)
         raise
 
-def get_failed_records(table_name, limit=100):
-    """Fetches records from a table that have a 'FAILED' status."""
+def get_records_paginated(table_name, status, page=1, per_page=15):
+    """Fetches a paginated list of records with a specific status."""
     if table_name not in TABLE_CONFIG:
         raise ValueError(f"Table '{table_name}' is not configured for inspection.")
-        
-    query = text(f"SELECT TOP {limit} * FROM dbo.{table_name} WHERE fetchStatus = 'FAILED' ORDER BY idd DESC")
+    status_upper = status.upper()
+    if status_upper not in ('FAILED', 'SKIPPED'):
+        raise ValueError("Status must be one of 'FAILED' or 'SKIPPED'.")
     
     try:
-        return execute_query(query.text)
+        count_query = text(f"SELECT COUNT(*) as total FROM dbo.{table_name} WHERE fetchStatus = :status")
+        total_result = execute_query(count_query.text, params={'status': status_upper})
+        total = total_result[0]['total'] if total_result else 0
+        
+        if total == 0:
+            return {'items': [], 'total': 0, 'page': page, 'pages': 0, 'per_page': per_page}
+
+        offset = (page - 1) * per_page
+        data_query = text(f"""
+            SELECT * FROM dbo.{table_name} 
+            WHERE fetchStatus = :status 
+            ORDER BY idd DESC
+            OFFSET :offset ROWS FETCH NEXT :per_page ROWS ONLY
+        """)
+        items = execute_query(data_query.text, params={'status': status_upper, 'offset': offset, 'per_page': per_page})
+
+        return {
+            'items': items, 'total': total, 'page': page,
+            'pages': math.ceil(total / per_page), 'per_page': per_page
+        }
     except Exception as e:
-        logger.error(f"Error fetching failed records for table '{table_name}': {e}", exc_info=True)
+        logger.error(f"Error fetching paginated records for '{table_name}' with status '{status}': {e}", exc_info=True)
         raise
 
-def get_skipped_records(table_name, limit=100):
-    """Fetches records from a table that have a 'SKIPPED' status."""
+def stream_all_records_for_export(table_name, status):
     if table_name not in TABLE_CONFIG:
         raise ValueError(f"Table '{table_name}' is not configured for inspection.")
-        
-    query = text(f"SELECT TOP {limit} * FROM dbo.{table_name} WHERE fetchStatus = 'SKIPPED' ORDER BY idd DESC")
-    
+    status_upper = status.upper()
+    if status_upper not in ('FAILED', 'SKIPPED'):
+        raise ValueError("Status must be one of 'FAILED' or 'SKIPPED'.")
+    query = text(f"SELECT * FROM dbo.{table_name} WHERE fetchStatus = :status ORDER BY idd DESC")
     try:
-        return execute_query(query.text)
+        connection = db.engine.connect()
+        result = connection.execute(query, {'status': status_upper})
+        for row in result:
+            yield dict(row._mapping)
+        connection.close()
     except Exception as e:
-        logger.error(f"Error fetching skipped records for table '{table_name}': {e}", exc_info=True)
+        logger.error(f"Error streaming records for export from '{table_name}': {e}", exc_info=True)
         raise
-    
+
 def retry_failed_record(table_name, pk_value):
-    """Resets the status of a failed record to allow it to be re-processed."""
     if table_name not in TABLE_CONFIG:
         raise ValueError(f"Table '{table_name}' is not configured for inspection.")
-    
-    config = TABLE_CONFIG[table_name]
-    pk_column = config['pk']
-
-    # We only update the specific failed record, not the whole group
-    query = text(f"""
-        UPDATE dbo.{table_name}
-        SET fetchStatus = NULL, fetchMessage = 'Retrying as per user request'
-        WHERE [{pk_column}] = :pk_value AND fetchStatus = 'FAILED'
-    """)
-    
-    try:
-        rows_affected = execute_write(query.text, params={'pk_value': pk_value})
-        if rows_affected == 0:
-            logger.warning(f"Attempted to retry record '{pk_value}' in '{table_name}', but it was not found or not in a FAILED state.")
-        return rows_affected
-    except Exception as e:
-        logger.error(f"Error retrying record '{pk_value}' in table '{table_name}': {e}", exc_info=True)
-        raise
+    pk_column = TABLE_CONFIG[table_name]['pk']
+    query = text(f"UPDATE dbo.{table_name} SET fetchStatus = NULL, fetchMessage = 'Retrying as per user request' WHERE [{pk_column}] = :pk_value AND fetchStatus = 'FAILED'")
+    return execute_write(query.text, params={'pk_value': pk_value})
     
 def ignore_skipped_record(table_name, pk_value):
-    """Updates the status of a skipped record to IGNORED."""
+    if table_name not in TABLE_CONFIG:
+        raise ValueError(f"Table '{table_name}' is not configured for inspection.")
+    pk_column = TABLE_CONFIG[table_name]['pk']
+    query = text(f"UPDATE dbo.{table_name} SET fetchStatus = 'IGNORED', fetchMessage = 'Manually ignored by user' WHERE [{pk_column}] = :pk_value AND fetchStatus = 'SKIPPED'")
+    return execute_write(query.text, params={'pk_value': pk_value})
+
+# --- NEW: Bulk action functions ---
+def retry_all_failed_records(table_name):
+    """Resets the status for ALL failed records in a table, allowing them to be re-processed."""
     if table_name not in TABLE_CONFIG:
         raise ValueError(f"Table '{table_name}' is not configured for inspection.")
     
-    config = TABLE_CONFIG[table_name]
-    pk_column = config['pk']
-
     query = text(f"""
         UPDATE dbo.{table_name}
-        SET fetchStatus = 'IGNORED', fetchMessage = 'Manually ignored by user'
-        WHERE [{pk_column}] = :pk_value AND fetchStatus = 'SKIPPED'
+        SET fetchStatus = NULL, fetchMessage = 'Retrying all as per user request'
+        WHERE fetchStatus = 'FAILED'
     """)
-    
     try:
-        rows_affected = execute_write(query.text, params={'pk_value': pk_value})
-        if rows_affected == 0:
-            logger.warning(f"Attempted to ignore record '{pk_value}' in '{table_name}', but it was not found or not in a SKIPPED state.")
+        rows_affected = execute_write(query.text)
+        logger.info(f"Successfully flagged {rows_affected} failed records for retry in table '{table_name}'.")
         return rows_affected
     except Exception as e:
-        logger.error(f"Error ignoring record '{pk_value}' in table '{table_name}': {e}", exc_info=True)
+        logger.error(f"Error retrying all failed records in table '{table_name}': {e}", exc_info=True)
         raise
+
+def ignore_all_skipped_records(table_name):
+    """Updates the status to IGNORED for ALL skipped records in a table."""
+    if table_name not in TABLE_CONFIG:
+        raise ValueError(f"Table '{table_name}' is not configured for inspection.")
+    
+    query = text(f"""
+        UPDATE dbo.{table_name}
+        SET fetchStatus = 'IGNORED', fetchMessage = 'Manually ignored all by user'
+        WHERE fetchStatus = 'SKIPPED'
+    """)
+    try:
+        rows_affected = execute_write(query.text)
+        logger.info(f"Successfully ignored {rows_affected} skipped records in table '{table_name}'.")
+        return rows_affected
+    except Exception as e:
+        logger.error(f"Error ignoring all skipped records in table '{table_name}': {e}", exc_info=True)
+        raise
+# --- END OF NEW ---
+# end of app/services/inspect_service.py

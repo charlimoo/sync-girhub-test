@@ -4,6 +4,37 @@
 <div class="container my-4">
     <h2>Admin Area</h2>
 
+    <div class="card border-primary mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Data Explorer</h5>
+        </div>
+        <div class="card-body">
+            <p class="card-text">
+                Use the Data Explorer to securely search for specific records in the source database tables. This is a read-only tool for quick lookups and diagnostics.
+            </p>
+            <a href="{{ url_for('main.admin_explorer_page') }}" class="btn btn-primary">
+                <i class="bi bi-search"></i> Open Data Explorer
+            </a>
+        </div>
+    </div>
+
+    <div class="card border-info mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">Application Controls</h5>
+        </div>
+        <div class="card-body">
+            <h5 class="card-title">Reload Scheduler</h5>
+            <p class="card-text">
+                This is a "soft" reload. Use this if you have manually edited a job's schedule in the <code>job_config</code> table and want the change to take effect without a full application restart. It only reloads the scheduler's job definitions from the database.
+            </p>
+            <form action="{{ url_for('main.reschedule_jobs') }}" method="post">
+                <button type="submit" class="btn btn-info">
+                    <i class="bi bi-arrow-repeat"></i> Reload and Reschedule All Jobs
+                </button>
+            </form>
+        </div>
+    </div>
+
     <div class="card border-danger mb-4">
         <div class="card-header bg-danger text-white">
             <h5 class="mb-0">Seed Database with Fake Data</h5>
@@ -75,24 +106,6 @@
             </form>
         </div>
     </div>
-
-    <div class="card border-info mb-4">
-        <div class="card-header bg-info text-white">
-            <h5 class="mb-0">Application Controls</h5>
-        </div>
-        <div class="card-body">
-            <h5 class="card-title">Reload Scheduler</h5>
-            <p class="card-text">
-                This is a "soft" reload. Use this if you have manually edited a job's schedule in the <code>job_config</code> table and want the change to take effect without a full application restart. It only reloads the scheduler's job definitions from the database.
-            </p>
-            <form action="{{ url_for('main.reschedule_jobs') }}" method="post">
-                <button type="submit" class="btn btn-info">
-                    <i class="bi bi-arrow-repeat"></i> Reload and Reschedule All Jobs
-                </button>
-            </form>
-        </div>
-    </div>
-
 </div>
 
 <script>
