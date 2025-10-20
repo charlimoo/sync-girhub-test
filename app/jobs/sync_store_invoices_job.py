@@ -10,6 +10,7 @@ from app.services.db_repositories import InvoiceHeaderRepository, InvoiceItemRep
 from app.services.asanito_service import AsanitoService
 from app.services.asanito_http_client import AsanitoHttpClient
 from app.services.mapping_service import get_mapping, MappingNotFoundError
+from app.services import deal_service
 from app.models import SyncLog, JobConfig
 from app import db
 from app.utils.date_converter import convert_date_for_invoice_api, get_current_jalali_for_status_update
@@ -119,6 +120,21 @@ def run_job():
         synced_items, failed_items, skipped_items = [], [], []
         
         job_cache = {'bank_accounts': {}}
+        
+        # --- Deal Creation Setup ---
+        deal_creation_enabled = get_mapping('SystemSettings', 'DealCreationEnabled') == '1'
+        trigger_product_ids = set()
+        if deal_creation_enabled:
+            trigger_product_ids = deal_service.get_deal_trigger_product_ids()
+            if trigger_product_ids:
+                logger.info(f"Deal creation is ENABLED for {len(trigger_product_ids)} products.")
+            else:
+                logger.warning("Deal creation is enabled, but no trigger products are configured.")
+                deal_creation_enabled = False
+        else:
+            logger.info("Deal creation from invoices is DISABLED via system settings.")
+        # --- End Deal Creation Setup ---
+
         work_units = InvoiceHeaderRepository.find_work_units(limit=record_limit)
         
         if not work_units:
@@ -189,6 +205,31 @@ def run_job():
                             InvoiceHeaderRepository.finalize_work_unit(unit, 'SYNCED', asanito_id=asanito_id)
                             success_count += 1
                             synced_items.append(record_identifier)
+
+                            # --- Deal Creation Logic ---
+                            if deal_creation_enabled:
+                                try:
+                                    final_payload = _build_invoice_payload(header_data, items_data, asanito_service, api_client, job_cache)
+                                    asanito_person_id = final_payload['personID']
+                                    asanito_owner_user_id = final_payload['ownerUserID']
+
+                                    for item_data, payload_item in zip(items_data, final_payload['items']):
+                                        asanito_product_id = payload_item.get('productID')
+                                        
+                                        if asanito_product_id and asanito_product_id in trigger_product_ids:
+                                            logger.info(f"Trigger product found in invoice. Item: '{item_data.get('Title')}' (ID: {asanito_product_id}).")
+                                            deal_service.create_deal_for_invoice_item(
+                                                api_client=api_client,
+                                                invoice_header=header_data,
+                                                invoice_item=item_data,
+                                                asanito_person_id=asanito_person_id,
+                                                asanito_product_id=asanito_product_id,
+                                                asanito_owner_user_id=asanito_owner_user_id,
+                                                source_item_pk=item_data['itemVID']
+                                            )
+                                except Exception as deal_e:
+                                    logger.error(f"DEAL CREATION FAILED for invoice {record_identifier}, but invoice sync was successful. Error: {deal_e}", exc_info=True)
+                            # --- End Deal Creation Logic ---
                         else:
                             raise ValueError("Sync successful but received no Asanito Invoice ID.")
                     else:

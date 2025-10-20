@@ -29,22 +29,18 @@ class JobConfig(db.Model):
     trigger_type = db.Column(db.String(50), nullable=False, default='cron')
     trigger_args = db.Column(db.JSON, nullable=False)
 
-    # --- FINAL: Columns for concurrency control and termination ---
     is_running = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
     cancellation_requested = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
-    # --- END ---
 
     def __repr__(self):
         return f"<JobConfig {self.job_id} - {'Enabled' if self.is_enabled else 'Disabled'}>"
 
 class Mapping(db.Model):
     __tablename__ = 'mapping'
-    __table_args__ = {'schema': 'dbo'}
-
+    
     id = db.Column(db.Integer, primary_key=True)
     map_type = db.Column(db.String(100), nullable=False, index=True)
     
-    # Using Unicode to support a wider range of characters (maps to NVARCHAR)
     source_id = db.Column(db.Unicode(255), nullable=False, index=True)
     source_name = db.Column(db.Unicode(255), nullable=True)
     asanito_id = db.Column(db.String(255), nullable=False)
@@ -61,4 +57,42 @@ class Mapping(db.Model):
             'source_name': self.source_name,
             'asanito_id': self.asanito_id,
         }
+
+# --- MODELS FOR DEAL CREATION FEATURE ---
+
+class DealTriggerProduct(db.Model):
+    """Stores the list of Asanito product IDs that trigger deal creation."""
+    __tablename__ = 'deal_trigger_product'
+    __table_args__ = {'schema': 'dbo'}
+
+    asanito_product_id = db.Column(db.Integer, primary_key=True, autoincrement=False)
+    product_title = db.Column(db.Unicode(500), nullable=False)
+    product_category = db.Column(db.Unicode(255), nullable=True)
+    added_on = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<DealTriggerProduct {self.asanito_product_id} - {self.product_title}>"
+
+class InvoiceDealLink(db.Model):
+    """
+    Acts as a log to prevent creating duplicate deals for the same invoice item.
+    This makes the deal creation process idempotent.
+    """
+    __tablename__ = 'invoice_deal_link'
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_invoice_vid = db.Column(db.String(255), nullable=False, index=True)
+    source_item_pk = db.Column(db.String(255), nullable=False)
+    deal_asanito_id = db.Column(db.Integer, nullable=False)
+    created_on = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('source_invoice_vid', 'source_item_pk', name='_source_invoice_item_uc'),
+        {'schema': 'dbo'}
+    )
+
+    def __repr__(self):
+        return f"<InvoiceDealLink source_item={self.source_item_pk} -> deal={self.deal_asanito_id}>"
+
+# --- END OF DEAL CREATION MODELS ---
 # end of app/models.py

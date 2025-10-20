@@ -1,3 +1,4 @@
+# start of app/routes.py
 import logging
 import queue
 import time
@@ -13,8 +14,10 @@ from flask import (
 from apscheduler.triggers.cron import CronTrigger
 
 from . import db, scheduler
-from .models import SyncLog, JobConfig, Mapping
-from .services import mapping_service, inspect_service, explorer_service
+from .models import SyncLog, JobConfig, Mapping, DealTriggerProduct, InvoiceDealLink
+from .services import mapping_service, inspect_service, explorer_service, deal_service
+from .services.asanito_service import AsanitoService
+from .services.asanito_http_client import AsanitoHttpClient
 from .services.scheduler_service import load_and_schedule_jobs
 from .services.stream_logger import QueueHandler
 from tests.seed_database import run_seeding
@@ -30,7 +33,12 @@ MAPPING_CONFIGS = {
         'display_name': 'System Settings', 'is_manual': True, 'keys': {
             'InvoicePersonLookupKey': { 'name': 'Person Lookup Column for Invoices', 'default_value': 'memberVId', 'control_type': 'select', 'options': [
                     {'value': 'memberVId', 'text': 'memberVId (for Production DB)'}, {'value': 'personVId', 'text': 'personVId (for Test DB)'}
-            ]}
+            ]},
+            'DealCreationEnabled': { 'name': 'Enable Deal Creation from Invoices', 'default_value': '0', 'control_type': 'select', 'options': [
+                    {'value': '1', 'text': 'Enabled'}, {'value': '0', 'text': 'Disabled'}
+            ]},
+            'DefaultFunnelID': { 'name': 'Default Funnel ID for New Deals (Optional Fallback)', 'default_value': ''},
+            'DefaultFunnelLevelID': { 'name': 'Default Funnel Level ID for New Deals', 'default_value': '1'}
         }
     },
     'Defaults': {
@@ -233,6 +241,61 @@ def save_mappings_data(map_type):
         logger.error(f"Error saving mappings for '{map_type}': {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+# --- ROUTES FOR DEALS FEATURE ---
+@main_bp.route('/deals')
+def deals_page():
+    """Renders the main page for managing deal trigger products."""
+    return render_template('deals.html')
+
+@main_bp.route('/api/deals/asanito_products')
+def get_asanito_products_api():
+    """API endpoint for the frontend to search and paginate products from Asanito."""
+    try:
+        search_term = request.args.get('search', None)
+        page = request.args.get('page', 1, type=int)
+        per_page = 20
+        
+        asanito_service = AsanitoService()
+        api_client = AsanitoHttpClient(asanito_service, job_id="DealsUI")
+        
+        product_data = deal_service.get_asanito_products(api_client, search_term, page, per_page)
+        
+        return jsonify({
+            'items': product_data.get('items', []),
+            'page': page,
+            'per_page': per_page,
+            'total': product_data.get('total', 0),
+            'pages': (product_data.get('total', 0) + per_page - 1) // per_page
+        })
+    except Exception as e:
+        logger.error(f"Failed to fetch Asanito products for UI: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@main_bp.route('/api/deals/trigger_products', methods=['GET', 'POST'])
+def trigger_products_api():
+    """API endpoint to get and save the list of deal trigger products."""
+    if request.method == 'GET':
+        try:
+            ids = deal_service.get_deal_trigger_product_ids()
+            return jsonify({'ids': list(ids)})
+        except Exception as e:
+            logger.error(f"Failed to get trigger product IDs: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+    
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data or 'products' not in data:
+            return jsonify({"error": "Invalid payload. 'products' key is missing."}), 400
+        
+        try:
+            deal_service.save_deal_trigger_products(data['products'])
+            flash("Deal trigger product list has been updated successfully.", "success")
+            return jsonify({"message": "Saved successfully."})
+        except Exception as e:
+            logger.error(f"Failed to save trigger products: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+# --- END OF DEALS ROUTES ---
+
 # --- INSPECT ROUTES ---
 @main_bp.route('/inspect')
 def inspect_page():
@@ -264,7 +327,6 @@ def export_records_to_csv(table_name, status):
         records_generator = inspect_service.stream_all_records_for_export(table_name, status)
 
         def generate_csv_with_bom():
-            # The BOM is a special character sequence that tells Excel the file is UTF-8
             yield b'\xef\xbb\xbf'  # UTF-8 BOM
 
             string_io = io.StringIO()
@@ -279,11 +341,9 @@ def export_records_to_csv(table_name, status):
                 
                 writer.writerow(record.values())
                 
-                # Encode the string buffer to UTF-8 bytes and yield
                 data = string_io.getvalue()
                 yield data.encode('utf-8')
                 
-                # Reset the buffer for the next row
                 string_io.seek(0)
                 string_io.truncate(0)
 
@@ -369,7 +429,11 @@ def reset_application_tables():
         return redirect(url_for('main.admin_page'))
     try:
         logger.warning("Initiating deletion of application tables as requested by admin.")
-        db.metadata.drop_all(bind=db.engine, tables=[Mapping.__table__, JobConfig.__table__, SyncLog.__table__])
+        tables_to_drop = [
+            Mapping.__table__, JobConfig.__table__, SyncLog.__table__,
+            DealTriggerProduct.__table__, InvoiceDealLink.__table__
+        ]
+        db.metadata.drop_all(bind=db.engine, tables=tables_to_drop)
         db.create_all()
         from app import _seed_manual_mappings
         _seed_manual_mappings(current_app)
@@ -432,3 +496,4 @@ def run_seeder_action():
         return redirect(url_for('main.admin_page'))
     flash("Starting the database seeding process. This will take a moment.", "info")
     return redirect(url_for('main.seed_database_page'))
+# end of app/routes.py

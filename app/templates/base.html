@@ -1,4 +1,3 @@
-
 <!-- app/templates/base.html -->
 <!doctype html>
 <html lang="en">
@@ -16,10 +15,10 @@
             <a class="navbar-brand" href="{{ url_for('main.index') }}">
                 Asanito Sync Dashboard
             </a>
-            <!-- MODIFIED: Navbar links pushed to the right, Admin link added -->
             <div class="navbar-nav ms-auto">
               <a class="nav-link" href="{{ url_for('main.index') }}">Dashboard</a>
               <a class="nav-link" href="{{ url_for('main.mappings_page') }}">Mappings</a>
+              <a class="nav-link" href="{{ url_for('main.deals_page') }}">Deals</a>
               <a class="nav-link" href="{{ url_for('main.inspect_page') }}">Inspect</a>
               <a class="nav-link" href="{{ url_for('main.admin_page') }}">Admin</a>
             </div>

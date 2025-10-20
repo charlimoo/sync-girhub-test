@@ -1,0 +1,245 @@
+<!-- app/templates/deals.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container my-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Deal Creation Management</h2>
+    </div>
+
+    <!-- Configuration Instructions -->
+    <div class="alert alert-info" role="alert">
+        <h4 class="alert-heading">Configuration</h4>
+        <p>
+            To enable or disable this feature and to set the default Funnel Level ID for new deals, please visit the
+            <a href="{{ url_for('main.mappings_page') }}" class="alert-link">Mappings page</a> and configure the "System Settings" type.
+        </p>
+    </div>
+
+    <!-- Main Management Card -->
+    <div class="card">
+        <div class="card-header">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-6">
+                    <label for="product-search" class="form-label">Search Products by Name</label>
+                    <div class="input-group">
+                        <input type="text" id="product-search" class="form-control" placeholder="Enter product name...">
+                        <button id="search-button" class="btn btn-outline-secondary" type="button">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                </div>
+                <div class="col-md-6 text-md-end">
+                    <button id="save-button" class="btn btn-success" disabled>
+                        <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                        Save Selected Products
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="status-area" class="text-center text-muted p-5">
+                Loading products from Asanito...
+            </div>
+            <div id="table-area" class="d-none">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th style="width: 5%;"><input type="checkbox" id="select-all-checkbox" class="form-check-input"></th>
+                                <th style="width: 15%;">Product ID</th>
+                                <th>Product Title</th>
+                                <th style="width: 25%;">Category</th>
+                            </tr>
+                        </thead>
+                        <tbody id="products-table-body">
+                            <!-- Rows will be dynamically inserted here -->
+                        </tbody>
+                    </table>
+                </div>
+                <nav id="pagination-nav" aria-label="Page navigation"></nav>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // --- UI Elements ---
+    const searchInput = document.getElementById('product-search');
+    const searchButton = document.getElementById('search-button');
+    const saveButton = document.getElementById('save-button');
+    const tableArea = document.getElementById('table-area');
+    const tableBody = document.getElementById('products-table-body');
+    const statusArea = document.getElementById('status-area');
+    const paginationNav = document.getElementById('pagination-nav');
+    const selectAllCheckbox = document.getElementById('select-all-checkbox');
+
+    // --- State ---
+    let currentPage = 1;
+    let currentSearchTerm = '';
+    let selectedProductIds = new Set();
+    let allProductsOnPage = [];
+    let productDataCache = new Map(); // Cache to store full product data by ID
+
+    // --- API Functions ---
+    async function fetchAsanitoProducts(page, search) {
+        const params = new URLSearchParams({ page, search: search || '' });
+        const response = await fetch(`/api/deals/asanito_products?${params.toString()}`);
+        if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch products.');
+        const productData = await response.json();
+        // Cache the data for each product on the page
+        productData.items.forEach(p => productDataCache.set(p.id, p));
+        return productData;
+    }
+
+    async function fetchSelectedProductIds() {
+        const response = await fetch('/api/deals/trigger_products');
+        if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch selected products.');
+        const data = await response.json();
+        return new Set(data.ids || []);
+    }
+
+    async function saveSelections() {
+        toggleLoading(saveButton, true);
+        try {
+            // Get full product data for all selected IDs from our cache
+            const allSelectedProducts = Array.from(selectedProductIds)
+                .map(id => productDataCache.get(id))
+                .filter(Boolean); // Filter out any IDs that might not be in the cache
+
+            const response = await fetch('/api/deals/trigger_products', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ products: allSelectedProducts })
+            });
+            if (!response.ok) throw new Error((await response.json()).error || 'Failed to save.');
+            
+            window.location.reload(); // Reload to show flash message
+        } catch (error) {
+            alert(`Error saving selections: ${error.message}`);
+            toggleLoading(saveButton, false);
+        }
+    }
+
+    // --- UI Rendering ---
+    function renderTable(products, selectedIds) {
+        tableBody.innerHTML = '';
+        allProductsOnPage = products;
+        if (products.length === 0) {
+            statusArea.innerHTML = `<div class="alert alert-secondary">No products found matching your search.</div>`;
+            statusArea.classList.remove('d-none');
+            tableArea.classList.add('d-none');
+            return;
+        }
+
+        products.forEach(product => {
+            const isChecked = selectedIds.has(product.id);
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><input type="checkbox" class="form-check-input product-checkbox" data-product-id="${product.id}" ${isChecked ? 'checked' : ''}></td>
+                <td>${product.id}</td>
+                <td>${product.title || '<em>N/A</em>'}</td>
+                <td>${product.category ? product.category.title : '<em>Uncategorized</em>'}</td>
+            `;
+            tableBody.appendChild(row);
+        });
+
+        statusArea.classList.add('d-none');
+        tableArea.classList.remove('d-none');
+        updateSelectAllCheckboxState();
+    }
+
+    function renderPagination(data) {
+        paginationNav.innerHTML = '';
+        if (data.pages <= 1) return;
+        
+        let html = '<ul class="pagination justify-content-center">';
+        html += `<li class="page-item ${data.page === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page - 1}">«</a></li>`;
+        let start = Math.max(1, data.page - 2), end = Math.min(data.pages, data.page + 2);
+        if (start > 1) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        for (let i = start; i <= end; i++) {
+            html += `<li class="page-item ${i === data.page ? 'active' : ''}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
+        }
+        if (end < data.pages) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        html += `<li class="page-item ${data.page === data.pages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page + 1}">»</a></li>`;
+        html += '</ul>';
+        
+        paginationNav.innerHTML = html;
+    }
+
+    function toggleLoading(button, isLoading) {
+        const spinner = button.querySelector('.spinner-border');
+        button.disabled = isLoading;
+        if (spinner) spinner.classList.toggle('d-none', !isLoading);
+    }
+    
+    function updateSelectAllCheckboxState() {
+        const allOnPageChecked = allProductsOnPage.length > 0 && allProductsOnPage.every(p => selectedProductIds.has(p.id));
+        selectAllCheckbox.checked = allOnPageChecked;
+    }
+
+    // --- Main Logic ---
+    async function loadData(page = 1, search = '') {
+        statusArea.innerHTML = `<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>`;
+        statusArea.classList.remove('d-none');
+        tableArea.classList.add('d-none');
+        saveButton.disabled = true;
+
+        try {
+            currentPage = page;
+            currentSearchTerm = search;
+            const productData = await fetchAsanitoProducts(page, search);
+            
+            renderTable(productData.items, selectedProductIds);
+            renderPagination(productData);
+            saveButton.disabled = false;
+        } catch (error) {
+            statusArea.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+        }
+    }
+
+    // --- Event Listeners ---
+    searchButton.addEventListener('click', () => loadData(1, searchInput.value.trim()));
+    searchInput.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') loadData(1, searchInput.value.trim());
+    });
+    saveButton.addEventListener('click', saveSelections);
+    paginationNav.addEventListener('click', e => {
+        e.preventDefault();
+        const link = e.target.closest('a.page-link');
+        if (link && !link.closest('.disabled')) {
+            loadData(parseInt(link.dataset.page), currentSearchTerm);
+        }
+    });
+    tableBody.addEventListener('change', e => {
+        if (e.target.matches('.product-checkbox')) {
+            const productId = parseInt(e.target.dataset.productId);
+            if (e.target.checked) selectedProductIds.add(productId);
+            else selectedProductIds.delete(productId);
+            updateSelectAllCheckboxState();
+        }
+    });
+    selectAllCheckbox.addEventListener('change', e => {
+        const isChecked = e.target.checked;
+        allProductsOnPage.forEach(product => {
+            if (isChecked) selectedProductIds.add(product.id);
+            else selectedProductIds.delete(product.id);
+        });
+        document.querySelectorAll('.product-checkbox').forEach(cb => cb.checked = isChecked);
+    });
+
+    // --- Initial Load ---
+    async function initialize() {
+        try {
+            selectedProductIds = await fetchSelectedProductIds();
+            await loadData(1, '');
+        } catch(error) {
+            statusArea.innerHTML = `<div class="alert alert-danger">Initialization failed: ${error.message}</div>`;
+        }
+    }
+
+    initialize();
+});
+</script>
+{% endblock %}

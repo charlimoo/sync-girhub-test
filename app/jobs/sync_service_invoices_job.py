@@ -10,6 +10,7 @@ from app.services.db_repositories import ServiceInvoiceRepository, MembershipRep
 from app.services.asanito_service import AsanitoService
 from app.services.asanito_http_client import AsanitoHttpClient
 from app.services.mapping_service import get_mapping, MappingNotFoundError
+from app.services import deal_service
 from app.models import SyncLog, JobConfig
 from app import db
 from app.utils.date_converter import convert_date_for_invoice_api, get_current_jalali_for_status_update
@@ -110,6 +111,21 @@ def run_job():
         synced_items, failed_items, skipped_items = [], [], []
         
         job_cache = {'bank_accounts': {}}
+        
+        # --- Deal Creation Setup ---
+        deal_creation_enabled = get_mapping('SystemSettings', 'DealCreationEnabled') == '1'
+        trigger_product_ids = set()
+        if deal_creation_enabled:
+            trigger_product_ids = deal_service.get_deal_trigger_product_ids()
+            if trigger_product_ids:
+                logger.info(f"Deal creation is ENABLED for {len(trigger_product_ids)} products.")
+            else:
+                logger.warning("Deal creation is enabled, but no trigger products are configured.")
+                deal_creation_enabled = False
+        else:
+            logger.info("Deal creation from invoices is DISABLED via system settings.")
+        # --- End Deal Creation Setup ---
+
         work_units = ServiceInvoiceRepository.find_work_units(limit=record_limit)
         
         if not work_units:
@@ -160,22 +176,37 @@ def run_job():
                             asanito_id_for_failure = asanito_id
 
                             logger.info(f"Service Invoice {asanito_id} sync success. Updating status to 'finalized' (3).")
-                            status_payload = {
-                                "invoiceIDs": [asanito_id],
-                                "status": 3,
-                                "sellDate": get_current_jalali_for_status_update()
-                            }
-                            status_response = api_client.request(
-                                method='PUT',
-                                endpoint_template='/api/asanito/Invoice/groupUpdateStatus',
-                                body_payload=status_payload
-                            )
+                            status_payload = { "invoiceIDs": [asanito_id], "status": 3, "sellDate": get_current_jalali_for_status_update() }
+                            status_response = api_client.request(method='PUT', endpoint_template='/api/asanito/Invoice/groupUpdateStatus', body_payload=status_payload)
                             if status_response.get('error'):
                                 raise ValueError(f"Invoice {asanito_id} created, but status update failed: {status_response['error']}")
 
                             ServiceInvoiceRepository.finalize_work_unit(unit, 'SYNCED', asanito_id=asanito_id)
                             success_count += 1
                             synced_items.append(record_identifier)
+
+                            # --- Deal Creation Logic ---
+                            if deal_creation_enabled:
+                                try:
+                                    final_payload = _build_service_invoice_payload(invoice_data, asanito_service, api_client, job_cache)
+                                    asanito_person_id = final_payload['personID']
+                                    asanito_owner_user_id = final_payload['ownerUserID']
+                                    asanito_product_id = final_payload['items'][0]['productID']
+
+                                    if asanito_product_id and asanito_product_id in trigger_product_ids:
+                                        logger.info(f"Trigger product found in service invoice. Product ID: {asanito_product_id}.")
+                                        deal_service.create_deal_for_invoice_item(
+                                            api_client=api_client,
+                                            invoice_header=invoice_data,
+                                            invoice_item=invoice_data, 
+                                            asanito_person_id=asanito_person_id,
+                                            asanito_product_id=asanito_product_id,
+                                            asanito_owner_user_id=asanito_owner_user_id,
+                                            source_item_pk=invoice_data['id']
+                                        )
+                                except Exception as deal_e:
+                                    logger.error(f"DEAL CREATION FAILED for invoice {record_identifier}, but invoice sync was successful. Error: {deal_e}", exc_info=True)
+                            # --- End Deal Creation Logic ---
                         else:
                             raise ValueError("Sync successful but received no Asanito Invoice ID.")
                     else:
