@@ -1,4 +1,5 @@
 # start of app/__init__.py
+# start of app/__init__.py
 # app/__init__.py
 import os
 import logging
@@ -39,21 +40,21 @@ def _check_and_add_sync_columns(app):
     with app.app_context():
         logger = logging.getLogger('app.migrator')
         
-        # --- MODIFIED: Add app's own tables to the check ---
         tables_to_check = {
             'invoiceHed': 'dbo', 'invoiceItem': 'dbo', 'membership': 'dbo', 
             'receipt': 'dbo', 'service': 'dbo', 'ServiceInvoice': 'dbo',
-            'job_config': 'dbo' # Added job_config table
+            'job_config': 'dbo',
+            'deal_trigger_product': 'dbo'
         }
         
         columns_to_add = {
             'fetchStatus': 'NVARCHAR(50) NULL',
             'fetchMessage': 'NVARCHAR(MAX) NULL',
-            # Added columns for JobConfig
             'is_running': 'BIT NOT NULL DEFAULT 0',
-            'cancellation_requested': 'BIT NOT NULL DEFAULT 0'
+            'cancellation_requested': 'BIT NOT NULL DEFAULT 0',
+            'funnel_id': 'INT NULL',
+            'funnel_level_id': 'INT NULL'
         }
-        # --- END OF MODIFICATION ---
         
         columns_to_modify = {
             'receipt': {'aID': ('INT NULL', VARCHAR)}
@@ -79,7 +80,6 @@ def _check_and_add_sync_columns(app):
                         elif existing_col:
                              logger.debug(f"Column 'dbo.{table_name}.{col_name}' already has a correct type. Skipping.")
                 
-            # --- MODIFIED: Loop through the new tables_to_check dictionary ---
             for table_name, schema in tables_to_check.items():
                 full_table_name = f"{schema}.{table_name}"
                 if not inspector.has_table(table_name, schema=schema):
@@ -89,14 +89,12 @@ def _check_and_add_sync_columns(app):
                 existing_columns_names = [col['name'].lower() for col in inspector.get_columns(table_name, schema=schema)]
                 
                 for col_name, col_type in columns_to_add.items():
-                    # --- MODIFIED: Conditionally add columns only to relevant tables ---
-                    # Business columns
-                    if col_name in ['fetchStatus', 'fetchMessage'] and table_name == 'job_config':
+                    if col_name in ['fetchStatus', 'fetchMessage'] and table_name in ['job_config', 'deal_trigger_product']:
                         continue
-                    # App columns
                     if col_name in ['is_running', 'cancellation_requested'] and table_name != 'job_config':
                         continue
-                    # --- END OF MODIFICATION ---
+                    if col_name in ['funnel_id', 'funnel_level_id'] and table_name != 'deal_trigger_product':
+                        continue
 
                     if col_name.lower() not in existing_columns_names:
                         try:
@@ -182,4 +180,5 @@ def create_app(config_name='development'):
         load_and_schedule_jobs(app, scheduler)
 
     return app
+# end of app/__init__.py
 # end of app/__init__.py

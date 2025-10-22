@@ -150,9 +150,14 @@ class AsanitoHttpClient:
     def _log_response(self, response, retry_prefix=""):
         """Logs incoming response details."""
         logger.info(f"{self.log_prefix}: {retry_prefix}Response <- Status {response.status_code} {response.reason}")
-        # Log body only if it's not successful or the content is small
-        if response.status_code >= 400 or (response.text and len(response.text) < 1000):
-            logger.debug(f"{self.log_prefix}: Response Body -> {response.text[:1000]}")
+        
+        # --- MODIFIED FOR DEBUGGING PRODUCTS ---
+        # Log body if it's an error OR a successful response (200)
+        if response.status_code >= 400:
+            logger.error(f"{self.log_prefix}: Response Error Body -> {response.text[:1000]}")
+        elif response.status_code == 200 and response.text:
+            # Log the full successful response body for inspection
+            logger.debug(f"{self.log_prefix}: Response SUCCESS Body -> {response.text[:2000]}")
             
     def _format_error_response(self, error):
         """Creates a standardized dictionary from an exception."""

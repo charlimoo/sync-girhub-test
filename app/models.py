@@ -1,4 +1,5 @@
 # start of app/models.py
+# start of app/models.py
 # app/models.py
 from . import db
 from datetime import datetime
@@ -70,6 +71,11 @@ class DealTriggerProduct(db.Model):
     product_category = db.Column(db.Unicode(255), nullable=True)
     added_on = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
+    # --- MODIFIED: Added columns for per-product funnel configuration ---
+    funnel_id = db.Column(db.Integer, nullable=True)
+    funnel_level_id = db.Column(db.Integer, nullable=True)
+    # --- END OF MODIFICATION ---
+
     def __repr__(self):
         return f"<DealTriggerProduct {self.asanito_product_id} - {self.product_title}>"
 
@@ -95,4 +101,5 @@ class InvoiceDealLink(db.Model):
         return f"<InvoiceDealLink source_item={self.source_item_pk} -> deal={self.deal_asanito_id}>"
 
 # --- END OF DEAL CREATION MODELS ---
+# end of app/models.py
 # end of app/models.py

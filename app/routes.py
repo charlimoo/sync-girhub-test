@@ -1,4 +1,5 @@
 # start of app/routes.py
+# start of app/routes.py
 import logging
 import queue
 import time
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 main_bp = Blueprint('main', __name__)
 
-# --- MAPPING CONFIGURATION (Unchanged) ---
+# --- MODIFIED: Removed obsolete Funnel ID keys from MAPPING_CONFIGS ---
 MAPPING_CONFIGS = {
     'SystemSettings': {
         'display_name': 'System Settings', 'is_manual': True, 'keys': {
@@ -36,9 +37,7 @@ MAPPING_CONFIGS = {
             ]},
             'DealCreationEnabled': { 'name': 'Enable Deal Creation from Invoices', 'default_value': '0', 'control_type': 'select', 'options': [
                     {'value': '1', 'text': 'Enabled'}, {'value': '0', 'text': 'Disabled'}
-            ]},
-            'DefaultFunnelID': { 'name': 'Default Funnel ID for New Deals (Optional Fallback)', 'default_value': ''},
-            'DefaultFunnelLevelID': { 'name': 'Default Funnel Level ID for New Deals', 'default_value': '1'}
+            ]}
         }
     },
     'Defaults': {
@@ -64,6 +63,7 @@ MAPPING_CONFIGS = {
             {'table': 'dbo.receipt', 'id_col': 'ReceiveType'}
     ]}
 }
+# --- END OF MODIFICATION ---
 
 # --- UTILITY FUNCTIONS ---
 def pretty_print_trigger(trigger):
@@ -276,10 +276,10 @@ def trigger_products_api():
     """API endpoint to get and save the list of deal trigger products."""
     if request.method == 'GET':
         try:
-            ids = deal_service.get_deal_trigger_product_ids()
-            return jsonify({'ids': list(ids)})
+            products = deal_service.get_deal_trigger_products()
+            return jsonify({'products': products})
         except Exception as e:
-            logger.error(f"Failed to get trigger product IDs: {e}", exc_info=True)
+            logger.error(f"Failed to get trigger products: {e}", exc_info=True)
             return jsonify({'error': str(e)}), 500
     
     if request.method == 'POST':
@@ -294,6 +294,7 @@ def trigger_products_api():
         except Exception as e:
             logger.error(f"Failed to save trigger products: {e}", exc_info=True)
             return jsonify({'error': str(e)}), 500
+
 # --- END OF DEALS ROUTES ---
 
 # --- INSPECT ROUTES ---
@@ -496,4 +497,5 @@ def run_seeder_action():
         return redirect(url_for('main.admin_page'))
     flash("Starting the database seeding process. This will take a moment.", "info")
     return redirect(url_for('main.seed_database_page'))
+# end of app/routes.py
 # end of app/routes.py

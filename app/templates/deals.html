@@ -5,35 +5,46 @@
 <div class="container my-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>Deal Creation Management</h2>
+        <button id="save-button" class="btn btn-success btn-lg" disabled>
+            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+            Save All Changes
+        </button>
     </div>
 
     <!-- Configuration Instructions -->
     <div class="alert alert-info" role="alert">
         <h4 class="alert-heading">Configuration</h4>
         <p>
-            To enable or disable this feature and to set the default Funnel Level ID for new deals, please visit the
+            To enable or disable this feature and to set the default Funnel Level ID, please visit the
             <a href="{{ url_for('main.mappings_page') }}" class="alert-link">Mappings page</a> and configure the "System Settings" type.
         </p>
     </div>
+
+    <!-- NEW: Selected Trigger Products Card -->
+    <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Selected Trigger Products (<span id="selected-count">0</span>)</h5>
+        </div>
+        <div class="card-body">
+            <div id="selected-products-area">
+                <!-- Selected products will be listed here -->
+            </div>
+        </div>
+    </div>
+    <!-- END NEW -->
 
     <!-- Main Management Card -->
     <div class="card">
         <div class="card-header">
             <div class="row g-3 align-items-end">
-                <div class="col-md-6">
-                    <label for="product-search" class="form-label">Search Products by Name</label>
+                <div class="col-md-8">
+                    <label for="product-search" class="form-label">Search All Asanito Products</label>
                     <div class="input-group">
                         <input type="text" id="product-search" class="form-control" placeholder="Enter product name...">
                         <button id="search-button" class="btn btn-outline-secondary" type="button">
                             <i class="bi bi-search"></i> Search
                         </button>
                     </div>
-                </div>
-                <div class="col-md-6 text-md-end">
-                    <button id="save-button" class="btn btn-success" disabled>
-                        <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                        Save Selected Products
-                    </button>
                 </div>
             </div>
         </div>
@@ -43,10 +54,10 @@
             </div>
             <div id="table-area" class="d-none">
                 <div class="table-responsive">
-                    <table class="table table-striped">
+                    <table class="table table-striped table-hover">
                         <thead>
                             <tr>
-                                <th style="width: 5%;"><input type="checkbox" id="select-all-checkbox" class="form-check-input"></th>
+                                <th style="width: 5%;"><input type="checkbox" id="select-all-checkbox" title="Select all on this page" class="form-check-input"></th>
                                 <th style="width: 15%;">Product ID</th>
                                 <th>Product Title</th>
                                 <th style="width: 25%;">Category</th>
@@ -66,9 +77,11 @@
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     // --- UI Elements ---
+    const saveButton = document.getElementById('save-button');
     const searchInput = document.getElementById('product-search');
     const searchButton = document.getElementById('search-button');
-    const saveButton = document.getElementById('save-button');
+    const selectedProductsArea = document.getElementById('selected-products-area');
+    const selectedCountSpan = document.getElementById('selected-count');
     const tableArea = document.getElementById('table-area');
     const tableBody = document.getElementById('products-table-body');
     const statusArea = document.getElementById('status-area');
@@ -78,44 +91,56 @@ document.addEventListener('DOMContentLoaded', function() {
     // --- State ---
     let currentPage = 1;
     let currentSearchTerm = '';
-    let selectedProductIds = new Set();
-    let allProductsOnPage = [];
-    let productDataCache = new Map(); // Cache to store full product data by ID
+    let selectedProducts = new Map(); // Use a Map to store full product data: { id => productObject }
+    let allProductsOnPage = []; 
 
     // --- API Functions ---
     async function fetchAsanitoProducts(page, search) {
         const params = new URLSearchParams({ page, search: search || '' });
         const response = await fetch(`/api/deals/asanito_products?${params.toString()}`);
         if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch products.');
-        const productData = await response.json();
-        // Cache the data for each product on the page
-        productData.items.forEach(p => productDataCache.set(p.id, p));
-        return productData;
+        return response.json();
     }
 
-    async function fetchSelectedProductIds() {
+    async function fetchSelectedProducts() {
         const response = await fetch('/api/deals/trigger_products');
         if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch selected products.');
         const data = await response.json();
-        return new Set(data.ids || []);
+        const productMap = new Map();
+        (data.products || []).forEach(p => productMap.set(p.id, p));
+        return productMap;
     }
 
     async function saveSelections() {
         toggleLoading(saveButton, true);
         try {
-            // Get full product data for all selected IDs from our cache
-            const allSelectedProducts = Array.from(selectedProductIds)
-                .map(id => productDataCache.get(id))
-                .filter(Boolean); // Filter out any IDs that might not be in the cache
+            // --- MODIFIED: Gather data directly from the DOM to capture user input ---
+            const productsToSave = [];
+            const selectedRows = document.querySelectorAll('#selected-products-area tbody tr');
 
+            selectedRows.forEach(row => {
+                const productId = parseInt(row.dataset.productId);
+                const originalProductData = selectedProducts.get(productId);
+
+                if (originalProductData) {
+                    productsToSave.push({
+                        id: productId,
+                        title: originalProductData.title,
+                        category: originalProductData.category,
+                        funnel_id: row.querySelector('.funnel-id-input').value.trim(),
+                        funnel_level_id: row.querySelector('.funnel-level-id-input').value.trim()
+                    });
+                }
+            });
+            // --- END OF MODIFICATION ---
+            
             const response = await fetch('/api/deals/trigger_products', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ products: allSelectedProducts })
+                body: JSON.stringify({ products: productsToSave })
             });
             if (!response.ok) throw new Error((await response.json()).error || 'Failed to save.');
-            
-            window.location.reload(); // Reload to show flash message
+            window.location.reload();
         } catch (error) {
             alert(`Error saving selections: ${error.message}`);
             toggleLoading(saveButton, false);
@@ -123,7 +148,56 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // --- UI Rendering ---
-    function renderTable(products, selectedIds) {
+    function renderSelectedProducts() {
+        selectedProductsArea.innerHTML = '';
+        selectedCountSpan.textContent = selectedProducts.size;
+        if (selectedProducts.size === 0) {
+            selectedProductsArea.innerHTML = `<p class="text-muted">No products selected. Check a product from the list below to add it here.</p>`;
+            return;
+        }
+
+        const table = document.createElement('table');
+        table.className = 'table table-sm table-striped';
+        // --- MODIFIED: Add headers for Funnel ID and Funnel Level ID ---
+        table.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Product Title</th>
+                    <th style="width: 10%;">ID</th>
+                    <th style="width: 15%;">Funnel ID</th>
+                    <th style="width: 15%;">Funnel Level ID</th>
+                    <th style="width: 10%;">Action</th>
+                </tr>
+            </thead>
+            <tbody></tbody>`;
+        // --- END OF MODIFICATION ---
+        const tbody = table.querySelector('tbody');
+
+        const sortedProducts = Array.from(selectedProducts.values()).sort((a, b) => a.title.localeCompare(b.title));
+
+        sortedProducts.forEach(product => {
+            const row = document.createElement('tr');
+            row.dataset.productId = product.id; // Add data attribute for easier lookup on save
+            
+            // Handle null/undefined values gracefully for input fields
+            const funnelIdValue = product.funnel_id === null || product.funnel_id === undefined ? '' : product.funnel_id;
+            const funnelLevelIdValue = product.funnel_level_id === null || product.funnel_level_id === undefined ? '' : product.funnel_level_id;
+            
+            // --- MODIFIED: Add input fields for funnel configuration ---
+            row.innerHTML = `
+                <td>${product.title}</td>
+                <td class="text-muted">${product.id}</td>
+                <td><input type="number" class="form-control form-control-sm funnel-id-input" placeholder="Enter Funnel ID" value="${funnelIdValue}"></td>
+                <td><input type="number" class="form-control form-control-sm funnel-level-id-input" placeholder="Enter Level ID" value="${funnelLevelIdValue}"></td>
+                <td><button class="btn btn-sm btn-outline-danger remove-selected-btn" data-product-id="${product.id}">Remove</button></td>
+            `;
+            // --- END OF MODIFICATION ---
+            tbody.appendChild(row);
+        });
+        selectedProductsArea.appendChild(table);
+    }
+    
+    function renderAllProductsTable(products) {
         tableBody.innerHTML = '';
         allProductsOnPage = products;
         if (products.length === 0) {
@@ -134,7 +208,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         products.forEach(product => {
-            const isChecked = selectedIds.has(product.id);
+            const isChecked = selectedProducts.has(product.id);
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td><input type="checkbox" class="form-check-input product-checkbox" data-product-id="${product.id}" ${isChecked ? 'checked' : ''}></td>
@@ -149,11 +223,10 @@ document.addEventListener('DOMContentLoaded', function() {
         tableArea.classList.remove('d-none');
         updateSelectAllCheckboxState();
     }
-
+    
     function renderPagination(data) {
         paginationNav.innerHTML = '';
         if (data.pages <= 1) return;
-        
         let html = '<ul class="pagination justify-content-center">';
         html += `<li class="page-item ${data.page === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page - 1}">«</a></li>`;
         let start = Math.max(1, data.page - 2), end = Math.min(data.pages, data.page + 2);
@@ -164,7 +237,6 @@ document.addEventListener('DOMContentLoaded', function() {
         if (end < data.pages) html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
         html += `<li class="page-item ${data.page === data.pages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${data.page + 1}">»</a></li>`;
         html += '</ul>';
-        
         paginationNav.innerHTML = html;
     }
 
@@ -173,67 +245,91 @@ document.addEventListener('DOMContentLoaded', function() {
         button.disabled = isLoading;
         if (spinner) spinner.classList.toggle('d-none', !isLoading);
     }
-    
+
     function updateSelectAllCheckboxState() {
-        const allOnPageChecked = allProductsOnPage.length > 0 && allProductsOnPage.every(p => selectedProductIds.has(p.id));
+        const allOnPageChecked = allProductsOnPage.length > 0 && allProductsOnPage.every(p => selectedProducts.has(p.id));
         selectAllCheckbox.checked = allOnPageChecked;
     }
 
     // --- Main Logic ---
-    async function loadData(page = 1, search = '') {
+    async function loadAllProducts(page = 1, search = '') {
         statusArea.innerHTML = `<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>`;
         statusArea.classList.remove('d-none');
         tableArea.classList.add('d-none');
-        saveButton.disabled = true;
 
         try {
             currentPage = page;
             currentSearchTerm = search;
             const productData = await fetchAsanitoProducts(page, search);
-            
-            renderTable(productData.items, selectedProductIds);
+            renderAllProductsTable(productData.items);
             renderPagination(productData);
-            saveButton.disabled = false;
         } catch (error) {
             statusArea.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
         }
     }
 
     // --- Event Listeners ---
-    searchButton.addEventListener('click', () => loadData(1, searchInput.value.trim()));
-    searchInput.addEventListener('keyup', (e) => {
-        if (e.key === 'Enter') loadData(1, searchInput.value.trim());
-    });
     saveButton.addEventListener('click', saveSelections);
+    searchButton.addEventListener('click', () => loadAllProducts(1, searchInput.value.trim()));
+    searchInput.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') loadAllProducts(1, searchInput.value.trim());
+    });
     paginationNav.addEventListener('click', e => {
         e.preventDefault();
         const link = e.target.closest('a.page-link');
         if (link && !link.closest('.disabled')) {
-            loadData(parseInt(link.dataset.page), currentSearchTerm);
+            loadAllProducts(parseInt(link.dataset.page), currentSearchTerm);
         }
     });
+
+    // Event delegation for checkbox changes in the main table
     tableBody.addEventListener('change', e => {
         if (e.target.matches('.product-checkbox')) {
             const productId = parseInt(e.target.dataset.productId);
-            if (e.target.checked) selectedProductIds.add(productId);
-            else selectedProductIds.delete(productId);
+            const product = allProductsOnPage.find(p => p.id === productId);
+            if (e.target.checked) {
+                selectedProducts.set(productId, product);
+            } else {
+                selectedProducts.delete(productId);
+            }
+            renderSelectedProducts();
             updateSelectAllCheckboxState();
         }
     });
+    
     selectAllCheckbox.addEventListener('change', e => {
         const isChecked = e.target.checked;
         allProductsOnPage.forEach(product => {
-            if (isChecked) selectedProductIds.add(product.id);
-            else selectedProductIds.delete(product.id);
+            if (isChecked) {
+                selectedProducts.set(product.id, product);
+            } else {
+                selectedProducts.delete(product.id);
+            }
         });
         document.querySelectorAll('.product-checkbox').forEach(cb => cb.checked = isChecked);
+        renderSelectedProducts();
+    });
+
+    // Event delegation for remove buttons in the selected list
+    selectedProductsArea.addEventListener('click', e => {
+        if (e.target.matches('.remove-selected-btn')) {
+            const productId = parseInt(e.target.dataset.productId);
+            selectedProducts.delete(productId);
+            renderSelectedProducts();
+            // Uncheck the corresponding checkbox in the main list if it's visible
+            const checkbox = document.querySelector(`.product-checkbox[data-product-id="${productId}"]`);
+            if (checkbox) checkbox.checked = false;
+            updateSelectAllCheckboxState();
+        }
     });
 
     // --- Initial Load ---
     async function initialize() {
         try {
-            selectedProductIds = await fetchSelectedProductIds();
-            await loadData(1, '');
+            selectedProducts = await fetchSelectedProducts();
+            renderSelectedProducts();
+            await loadAllProducts(1, '');
+            saveButton.disabled = false;
         } catch(error) {
             statusArea.innerHTML = `<div class="alert alert-danger">Initialization failed: ${error.message}</div>`;
         }
