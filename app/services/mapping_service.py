@@ -1,3 +1,4 @@
+# start of app/services/mapping_service.py
 
 # start of app/services/mapping_service.py
 # app/services/mapping_service.py
@@ -90,38 +91,49 @@ def discover_values(config):
 
 def save_mappings(map_type, mappings_to_save):
     """
-    Saves a list of mappings to the database. Uses an upsert logic.
+    Saves a list of mappings to the database. Uses an upsert and delete logic.
+    - If an item has an asanito_id, it will be created or updated.
+    - If an item has an empty asanito_id, its corresponding database record will be deleted.
     """
     if not isinstance(mappings_to_save, list):
         raise TypeError("mappings_to_save must be a list of dictionaries.")
     
+    # Get all existing mappings for this type for efficient lookup
     existing_mappings = {m.source_id: m for m in Mapping.query.filter_by(map_type=map_type).all()}
     
     saved_count = 0
+    deleted_count = 0
+
     for item in mappings_to_save:
         source_id = item.get('source_id')
         asanito_id = item.get('asanito_id')
-
-        # We only save if a target Asanito ID is provided.
-        if not source_id or not asanito_id:
+        
+        if not source_id:
             continue
 
-        if source_id in existing_mappings:
-            # Update existing mapping
-            mapping_obj = existing_mappings[source_id]
-            mapping_obj.asanito_id = asanito_id
-            mapping_obj.source_name = item.get('source_name')
-        else:
-            # Create new mapping
-            mapping_obj = Mapping(
-                map_type=map_type,
-                source_id=source_id,
-                source_name=item.get('source_name'),
-                asanito_id=asanito_id
-            )
-            db.session.add(mapping_obj)
-        saved_count += 1
+        existing_obj = existing_mappings.get(source_id)
+
+        if asanito_id:  # If a value is provided, we perform an upsert (update or insert)
+            if existing_obj:
+                # Update existing mapping
+                existing_obj.asanito_id = asanito_id
+                existing_obj.source_name = item.get('source_name')
+            else:
+                # Create new mapping
+                new_mapping = Mapping(
+                    map_type=map_type,
+                    source_id=source_id,
+                    source_name=item.get('source_name'),
+                    asanito_id=asanito_id
+                )
+                db.session.add(new_mapping)
+            saved_count += 1
+        else:  # If the value is empty, we delete the existing record
+            if existing_obj:
+                db.session.delete(existing_obj)
+                deleted_count += 1
     
     db.session.commit()
-    logger.info(f"Saved {saved_count} mappings for type '{map_type}'.")
-    return saved_count
+    logger.info(f"Saved/Updated {saved_count} and deleted {deleted_count} mappings for type '{map_type}'.")
+    return saved_count + deleted_count
+# end of app/services/mapping_service.py

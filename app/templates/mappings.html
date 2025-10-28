@@ -85,11 +85,11 @@
             const mappingsToSave = [];
             document.querySelectorAll('#mapping-table-body tr').forEach(row => {
                 const control = row.querySelector('input[name="asanito_id"], select[name="asanito_id"]');
-                if (control && control.value.trim() !== '') {
+                if (control) {
                     mappingsToSave.push({
                         source_id: row.dataset.sourceId,
                         source_name: row.dataset.sourceName,
-                        asanito_id: control.value.trim()
+                        asanito_id: control.value.trim() // Still trim the value
                     });
                 }
             });
@@ -100,7 +100,10 @@
                     body: JSON.stringify({ mappings: mappingsToSave })
                 });
                 if (!response.ok) throw new Error((await response.json()).error || 'Failed to save.');
-                window.location.reload();
+                // --- MODIFICATION: Reload the data instead of the whole page for a smoother UX ---
+                await loadData(currentPage);
+                alert('Mappings saved successfully!');
+                // window.location.reload(); // This is no longer needed
             } catch (error) {
                 alert(`Error saving: ${error.message}`);
             } finally {
@@ -130,21 +133,8 @@
                 const data = await response.json();
                 currentPage = data.page;
 
-                // Pass the full mapping configs from Jinja to JavaScript
-                const fullConfig = {{ mapping_configs | tojson }};
-                const currentConfig = fullConfig[currentMapType];
-
-                // For manual types, augment the server data with control info from our config
-                if (currentConfig && currentConfig.is_manual) {
-                    data.items.forEach(item => {
-                        const keyConfig = currentConfig.keys[item.source_id];
-                        if (typeof keyConfig === 'object' && keyConfig.control_type) {
-                            item.control_type = keyConfig.control_type;
-                            item.options = keyConfig.options;
-                        }
-                    });
-                }
-
+                // --- MODIFICATION: The old code still works because the backend now passes the control info ---
+                // We don't need the full Jinja config dump anymore. The backend API response is now self-sufficient.
                 renderTable(data.items);
                 renderPagination(data);
                 saveBtn.disabled = data.total === 0;
@@ -167,7 +157,7 @@
                 row.dataset.sourceId = item.source_id;
                 row.dataset.sourceName = item.source_name || '';
 
-                // Dynamically create either an input or a select control based on item data
+                // --- START OF MODIFICATION: Dynamic control rendering ---
                 let controlHtml = '';
                 if (item.control_type === 'select') {
                     controlHtml = `<select class="form-select" name="asanito_id">`;
@@ -179,8 +169,12 @@
                     }
                     controlHtml += `</select>`;
                 } else {
-                    controlHtml = `<input type="text" class="form-control" name="asanito_id" value="${item.asanito_id || ''}" placeholder="Enter Asanito Value/ID">`;
+                    // Handle text, number, and other input types
+                    const inputType = (item.control_type === 'number') ? 'number' : 'text';
+                    const placeholder = item.options && item.options.placeholder ? item.options.placeholder : 'Enter Asanito Value/ID';
+                    controlHtml = `<input type="${inputType}" class="form-control" name="asanito_id" value="${item.asanito_id || ''}" placeholder="${placeholder}">`;
                 }
+                // --- END OF MODIFICATION ---
 
                 row.innerHTML = `
                     <td>${item.source_name || '<em>N/A</em>'}</td>

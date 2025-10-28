@@ -2,6 +2,9 @@
 import logging
 import itertools
 from .source_db_service import execute_query, execute_write
+# --- START OF NEW CODE ---
+from .mapping_service import get_mapping
+# --- END OF NEW CODE ---
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,29 @@ class BaseRepository:
         logger.info(f"Finding work units in {cls.__table_name__} based on fetchStatus...")
         grouping_key = cls.get_grouping_key()
         
+        # --- START OF NEW CODE ---
+        # Fetch and validate the minimum IDD filter setting for this table.
+        min_idd_filter_str = None
+        min_idd_filter_val = None
+        query_params = {}
+        idd_filter_clause = ""
+
+        try:
+            # Table name in the mapping is the short name (e.g., 'membership')
+            table_short_name = cls.__table_name__.split('.')[-1]
+            min_idd_filter_str = get_mapping('MinimumIddFilter', table_short_name)
+            
+            if min_idd_filter_str and min_idd_filter_str.isdigit():
+                min_idd_filter_val = int(min_idd_filter_str)
+                logger.warning(f"Applying Minimum IDD filter for '{cls.__table_name__}': Processing only records where idd >= {min_idd_filter_val}.")
+                idd_filter_clause = "AND T1.idd >= :min_idd"
+                query_params['min_idd'] = min_idd_filter_val
+            elif min_idd_filter_str:
+                logger.error(f"Invalid Minimum IDD filter value '{min_idd_filter_str}' for table '{table_short_name}'. Must be a number. Ignoring filter.")
+        except Exception as e:
+            logger.error(f"Could not retrieve Minimum IDD filter setting. Proceeding without it. Error: {e}", exc_info=True)
+        # --- END OF NEW CODE ---
+
         # Define a batch size for how many groups to process per run.
         # This is the core of the scalability fix.
         # If a JOB_RECORD_LIMIT is set for testing, use that, otherwise use a safe default.
@@ -123,10 +149,11 @@ class BaseRepository:
                 WHERE T2.[{grouping_key}] = T1.[{grouping_key}] 
                 AND (T2.fetchStatus IS NULL OR T2.fetchStatus = 'SKIPPED')
             )
+            {idd_filter_clause} -- <-- MODIFICATION: Apply IDD filter here
             ORDER BY T1.[{grouping_key}] -- Add ordering for consistency
         """
         
-        pending_key_rows = execute_query(query_for_keys)
+        pending_key_rows = execute_query(query_for_keys, params=query_params) # <-- MODIFICATION: Pass params
         if not pending_key_rows:
             logger.info(f"No pending work units found in {cls.__table_name__}.")
             return []
@@ -134,8 +161,25 @@ class BaseRepository:
         pending_keys = [row[grouping_key] for row in pending_key_rows if row[grouping_key] is not None]
         logger.info(f"Found a batch of {len(pending_keys)} unique pending groups to process.")
         
+        # --- START OF MODIFICATION ---
         # Now, fetch all records related ONLY to this small batch of keys.
-        all_relevant_records = cls.where(**{f"{grouping_key}__in": pending_keys})
+        # Also apply the IDD filter here to avoid fetching older, superseded records.
+        where_params = {f"{grouping_key}__in": pending_keys}
+        if min_idd_filter_val is not None:
+             # We can't use a simple `idd__gte` because _build_where_clause doesn't support it.
+             # Instead, we will build a custom where clause for the second query. This is a bit of a hack
+             # but avoids a larger refactor of _build_where_clause. A cleaner long-term solution
+             # might be to enhance _build_where_clause to support ">=" operators.
+             
+             # Re-build the where clause and params manually for this specific case.
+             where_clause, params = cls._build_where_clause(**where_params)
+             where_clause += f" AND [idd] >= :min_idd_fetch"
+             params['min_idd_fetch'] = min_idd_filter_val
+             
+             all_relevant_records = execute_query(f"SELECT * FROM {cls.__table_name__} {where_clause}", params=params)
+        else:
+            all_relevant_records = cls.where(**where_params)
+        # --- END OF MODIFICATION ---
         
         # The rest of the logic remains the same, but operates on a much smaller dataset.
         all_relevant_records.sort(key=lambda r: (r.get(grouping_key) or '', -(r.get('idd') or 0)))

@@ -46,6 +46,17 @@ MAPPING_CONFIGS = {
             'DefaultReceiptAccountID': ('Fallback Account ID for Receipts', '1'),
         }
     },
+    'MinimumIddFilter': {
+        'display_name': 'Minimum IDD Filter (Sync Start Point)',
+        'is_manual': True,
+        'keys': {
+            'membership': ('Memberships Table (membership)', ''),
+            'service': ('Services Table (service)', ''),
+            'invoiceHed': ('Store Invoices Table (invoiceHed)', ''),
+            'ServiceInvoice': ('Service Invoices Table (ServiceInvoice)', ''),
+            'receipt': ('Receipts Table (receipt)', '')
+        }
+    },
     'Gender': { 'display_name': 'Gender Mapping', 'is_manual': True, 'keys': {'0': ('Source: 0 (Men)', '1'), '1': ('Source: 1 (Women)', '2')} },
     'ProductType': { 'display_name': 'Product Type Mapping', 'is_manual': True, 'keys': {'1': ('Source: 1 (کالا/Commodity)', '1'), '2': ('Source: 2 (خدمت/Service)', '3')} },
     'Organization': { 'display_name': 'Organization IDs', 'source_tables': [
@@ -212,9 +223,24 @@ def get_mappings_data(map_type):
         if config.get('is_manual'):
             discovered_values = []
             for key, details in config['keys'].items():
+                # --- START OF MODIFICATION ---
+                # Handle both tuple and dict formats for 'details'
                 name = details.get('name', key) if isinstance(details, dict) else details[0]
                 default_val = details.get('default_value') if isinstance(details, dict) else details[1]
-                discovered_values.append({ 'source_id': key, 'source_name': name, 'asanito_id': saved_mappings.get(key, {}).get('asanito_id', default_val) })
+                
+                item_data = {
+                    'source_id': key,
+                    'source_name': name,
+                    'asanito_id': saved_mappings.get(key, {}).get('asanito_id', default_val)
+                }
+                # Pass detailed control info to the frontend if it exists
+                if isinstance(details, dict):
+                    if 'control_type' in details:
+                        item_data['control_type'] = details['control_type']
+                    if 'options' in details:
+                        item_data['options'] = details['options']
+                discovered_values.append(item_data)
+                # --- END OF MODIFICATION ---
             total_items, paginated_items = len(discovered_values), discovered_values
         else:
             discovered_values = mapping_service.discover_values(config)
